@@ -1,0 +1,54 @@
+name: Pull OCM NYC Retail CSV
+
+on:
+  workflow_dispatch:
+  schedule:
+    # every 6 hours (UTC). Change as needed.
+    - cron: "0 */6 * * *"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: pull-ocm-nyc
+  cancel-in-progress: true
+
+jobs:
+  pull:
+    runs-on: ubuntu-latest
+    env:
+      OCM_API_KEY: ${{ secrets.OCM_API_KEY }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests pandas
+
+      - name: Run pull script
+        run: |
+          python scripts/pull_ocm_nyc.py
+
+      - name: Commit updated CSV (if changed)
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          # adjust path/name if your script outputs somewhere else
+          git add ocm_nyc_retail_locations.csv
+
+          # Only commit if there are changes
+          if git diff --cached --quiet; then
+            echo "No changes to commit."
+            exit 0
+          fi
+
+          git commit -m "Update OCM NYC retail locations"
+          git push
