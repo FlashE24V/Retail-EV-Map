@@ -3,8 +3,7 @@ name: Pull OCM NYC Retail CSV
 on:
   workflow_dispatch:
   schedule:
-    # every 6 hours (UTC). Change as needed.
-    - cron: "0 */6 * * *"
+    - cron: "0 */6 * * *"  # every 6 hours (UTC)
 
 permissions:
   contents: write
@@ -18,6 +17,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       OCM_API_KEY: ${{ secrets.OCM_API_KEY }}
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -34,17 +34,15 @@ jobs:
 
       - name: Run pull script
         run: |
-          python scripts/pull_ocm_nyc.py
+          python pull_ocm_nyc.py
 
       - name: Commit updated CSV (if changed)
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-          # adjust path/name if your script outputs somewhere else
           git add ocm_nyc_retail_locations.csv
 
-          # Only commit if there are changes
           if git diff --cached --quiet; then
             echo "No changes to commit."
             exit 0
