@@ -25,33 +25,19 @@
       font: 14px/1.2 system-ui, -apple-system, Arial, sans-serif;
     }
     .controls .title { font-weight: 700; margin-bottom: 6px; display:block; }
-    .controls select, .controls label {
-      width: 260px;
-      max-width: 75vw;
-      font-size: 14px;
-    }
     .controls select {
+      width: 240px;
+      max-width: 70vw;
       padding: 6px 8px;
       border-radius: 8px;
       border: 1px solid #e5e7eb;
       background: #fff;
+      font-size: 14px;
     }
     .controls .hint {
       margin-top: 6px;
       font-size: 12px;
       color: #6b7280;
-    }
-    .controls .row {
-      margin-top: 8px;
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      font-size: 13px;
-      color: #111827;
-      user-select: none;
-    }
-    .controls input[type="checkbox"]{
-      width: 16px; height: 16px;
     }
 
     /* ⚡ circle icon */
@@ -70,9 +56,10 @@
       transform: translate(-1px, -1px);
       position: relative;
     }
-    .bolt-l2 { background: #2563eb; }
-    .bolt-l3 { background: #16a34a; }
+    .bolt-l2 { background: #2563eb; } /* blue */
+    .bolt-l3 { background: #16a34a; } /* green */
 
+    /* Optional operator badge (tiny) */
     .op-badge {
       position: absolute;
       right: -8px;
@@ -137,6 +124,7 @@
     // ======================
     var OCM_CSV_URL = 'ocm_nyc_retail_locations.csv?v=' + Date.now();
 
+    // Default view (will fitBounds after load)
     var map = L.map('map').setView([40.7128, -74.0060], 10);
 
     L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
@@ -170,6 +158,7 @@
     }
 
     function isDcFast(row) {
+      // Prefer explicit has_dc_fast; fallback to levels/max_kw
       var hasDc = row.has_dc_fast;
       if (hasDc === 1 || hasDc === true || ('' + hasDc).toLowerCase() === 'true') return true;
 
@@ -184,62 +173,6 @@
 
     function chargingLevelLabel(row) {
       return isDcFast(row) ? 'DC Fast (Level 3)' : 'Level 2';
-    }
-
-    // ✅ Heuristic: public access BUT paid parking / garage / valet / etc.
-    function isPaidParkingLikely(row) {
-      var parts = [
-        row.name,
-        row.operator,
-        row.address,
-        row.town,
-        row.usage_type,
-        row.usage_cost,
-        row.access_comments,
-        row.general_comments,
-        row.instructions
-      ].map(function(v){ return (v ?? '').toString().toLowerCase(); });
-
-      var text = parts.join(' | ');
-
-      // Strong indicators
-      var hardBad = [
-        'paid parking',
-        'pay to park',
-        'parking fee',
-        'fee for parking',
-        'paid garage',
-        'parking garage',
-        'garage parking',
-        'inside garage',
-        'in garage',
-        'valet',
-        'attendant',
-        'parking deck',
-        'car park',
-        'parkade',
-        'metered parking',
-        'hourly parking',
-        'daily parking',
-        'validation required',
-        'validated parking',
-        'ticket required'
-      ];
-
-      if (hardBad.some(function(k){ return text.includes(k); })) return true;
-
-      // Garage-ish words + fee-ish words
-      var garageWords = ['garage','parking','deck','valet','attendant','lot'];
-      var feeWords = ['$', 'usd', 'fee', 'fees', 'paid', 'rate', 'hour', 'hourly', 'per hour', 'per hr', 'daily'];
-
-      var hasGarage = garageWords.some(function(k){ return text.includes(k); });
-      var hasFee = feeWords.some(function(k){ return text.includes(k); });
-      if (hasGarage && hasFee) return true;
-
-      // $ + parking in any order
-      if (text.includes('parking') && text.includes('$')) return true;
-
-      return false;
     }
 
     function makeOperatorCode(op) {
@@ -275,7 +208,7 @@
       var op = normOperator(row.operator);
       var level = chargingLevelLabel(row);
 
-      var plugs = cleanStr(row.plug_types);           // ✅ Plug Types
+      var plugs = cleanStr(row.plug_types);
       var currents = cleanStr(row.current_types);
       var levels = cleanStr(row.charging_levels);
       var maxKw = (row.max_kw !== undefined && row.max_kw !== null && row.max_kw !== '') ? row.max_kw : '';
@@ -289,8 +222,6 @@
       var postcode = cleanStr(row.postcode);
 
       var lat = row.lat, lon = row.lon;
-
-      // ✅ Directions chooser (Apple + Google)
       var apple = 'http://maps.apple.com/?daddr=' + lat + ',' + lon;
       var gmaps = 'https://www.google.com/maps/dir/?api=1&destination=' + lat + ',' + lon;
 
@@ -322,21 +253,16 @@
     // ======================
     var operatorFilter = 'ALL';
     var levelFilter = 'ALL'; // ALL | Level 2 | DC Fast (Level 3)
-    var hidePaidParking = true; // ✅ default ON
 
     function passesOperator(row) {
       if (operatorFilter === 'ALL') return true;
-      return normOperator(row.operator) === operatorFilter;
+      var op = normOperator(row.operator);
+      return op === operatorFilter;
     }
 
     function passesLevel(row) {
       if (levelFilter === 'ALL') return true;
       return chargingLevelLabel(row) === levelFilter;
-    }
-
-    function passesPaidParking(row) {
-      if (!hidePaidParking) return true;
-      return !isPaidParkingLikely(row);
     }
 
     // ======================
@@ -351,17 +277,12 @@
         div.innerHTML =
           '<span class="title">Operator</span>' +
           '<select id="operatorSelect"></select>' +
-          '<div class="row">' +
-            '<input id="paidToggle" type="checkbox" checked />' +
-            '<label for="paidToggle">Hide paid parking / garages</label>' +
-          '</div>' +
           '<div class="hint">Tip: pick an operator, then filter Level 2 vs DC Fast.</div>';
 
         L.DomEvent.disableClickPropagation(div);
         L.DomEvent.disableScrollPropagation(div);
 
         var sel = div.querySelector('#operatorSelect');
-        var toggle = div.querySelector('#paidToggle');
 
         var allOpt = document.createElement('option');
         allOpt.value = 'ALL';
@@ -377,11 +298,6 @@
 
         sel.addEventListener('change', function(){
           operatorFilter = sel.value;
-          render();
-        });
-
-        toggle.addEventListener('change', function(){
-          hidePaidParking = toggle.checked;
           render();
         });
 
@@ -431,7 +347,6 @@
 
         if (!passesOperator(row)) return;
         if (!passesLevel(row)) return;
-        if (!passesPaidParking(row)) return; // ✅ hide paid parking/garages
 
         var levelClass = isDcFast(row) ? 'bolt-l3' : 'bolt-l2';
 
@@ -448,6 +363,7 @@
         any = true;
       });
 
+      // Fit to visible markers
       if (any) {
         var b = clusterGroup.getBounds();
         if (b && b.isValid()) map.fitBounds(b.pad(0.12));
@@ -462,19 +378,32 @@
       header: true,
       dynamicTyping: true,
       complete: function(res) {
+        // Keep all valid geo rows (no paid-parking restriction anymore)
         allRows = (res && res.data ? res.data : []).filter(function(r){
           return r && typeof r.lat === 'number' && typeof r.lon === 'number' && !isNaN(r.lat) && !isNaN(r.lon);
         });
 
+        // Build operator list (but remove "Blink Charging Europe" from dropdown)
         var opsSet = {};
         allRows.forEach(function(r){
           var op = normOperator(r.operator);
-          if (op) opsSet[op] = true;
+          if (!op) return;
+
+          // ✅ remove from Operators dropdown only
+          if (op === 'Blink Charging Europe') return;
+
+          opsSet[op] = true;
         });
+
         var ops = Object.keys(opsSet).sort(function(a,b){ return a.localeCompare(b); });
 
         addOperatorControl(ops);
         addLevelControl();
+
+        // Reset filters to avoid “stuck” state
+        operatorFilter = 'ALL';
+        levelFilter = 'ALL';
+
         render();
       },
       error: function(err) {
