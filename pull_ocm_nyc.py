@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
 """
-Open Charge Map (OCM) -> NEW YORK STATE export (full coverage) with:
-- Tiling to avoid the 500-result cap
-- Filters OUT NJ/CT/etc by keeping only StateOrProvince == NY/New York
+Open Charge Map (OCM) -> NEW YORK STATE export (includes NYC) with:
+- Tiling (so you don't get stuck at 500 results)
+- Filters OUT NJ/CT/etc by keeping only StateOrProvince that looks like NY
 - Includes operator (charging company)
 - Includes plug types + max kW summary
+- Prints a state breakdown so you can confirm NJ/CT are gone
 
 GitHub Actions:
 - Repo Secret: OCM_API_KEY
-- Workflow runs: python pull_ocm_nys.py
+- Workflow runs: python pull_ocm_nyc.py  (name can stay; script purpose is NYS)
 
 Output:
 - ocm_nys_retail_locations.csv
@@ -18,6 +19,7 @@ import os
 import time
 import requests
 import pandas as pd
+
 
 # =========================
 # CONFIG
@@ -30,11 +32,11 @@ if not API_KEY:
 URL = "https://api.openchargemap.io/v3/poi"
 
 # Approx New York State bounding box (covers Long Island + upstate)
-# NOTE: bbox will include some spillover, which we remove via StateOrProvince filter.
+# NOTE: bbox will include some spillover, which we remove via state filter below.
 NW_LAT, NW_LON = 45.0159, -79.7624
 SE_LAT, SE_LON = 40.4961, -71.8562
 
-# Increase tiles if you still see many tiles returning exactly MAXRESULTS_PER_TILE.
+# Tiling: increase if you still see tiles returning exactly MAXRESULTS_PER_TILE
 TILES_X = 12
 TILES_Y = 12
 
@@ -50,6 +52,7 @@ HEADERS = {
     "X-API-Key": API_KEY,
     "User-Agent": CLIENT_NAME,
 }
+
 
 # =========================
 # HELPERS
@@ -67,12 +70,14 @@ def fetch_tile(nw_lat: float, nw_lon: float, se_lat: float, se_lon: float):
         "maxresults": MAXRESULTS_PER_TILE,
         "output": "json",
 
-        # CRITICAL: keep reference objects like OperatorInfo / ConnectionType / CurrentType
+        # IMPORTANT: keep reference objects like OperatorInfo / ConnectionType / CurrentType
         "compact": False,
         "verbose": True,
 
-        # Optional but recommended
+        # Recommended to identify your client
         "client": CLIENT_NAME,
+
+        # Keep default snake_case property names
         "camelcase": False,
     }
     r = requests.get(URL, params=params, headers=HEADERS, timeout=TIMEOUT_SEC)
@@ -81,9 +86,15 @@ def fetch_tile(nw_lat: float, nw_lon: float, se_lat: float, se_lon: float):
 
 
 def is_new_york_state(addr: dict) -> bool:
-    # Keep ONLY NY (removes NJ/CT/PA spillover from bbox)
+    """
+    Keeps NY only. This catches common variants:
+      - "NY"
+      - "New York"
+      - "New York State"
+      - any string starting with "new york"
+    """
     state = (addr.get("StateOrProvince") or "").strip().lower()
-    return state in ("ny", "new york")
+    return state in ("ny", "new york") or state.startswith("new york")
 
 
 def extract_connection_summary(poi: dict):
@@ -176,7 +187,7 @@ def main():
     rows = []
     seen_ids = set()
     truncation_tiles = 0
-    kept_nonny = 0
+    filtered_nonny_total = 0
 
     for y in range(TILES_Y):
         for x in range(TILES_X):
@@ -191,8 +202,8 @@ def main():
             if len(pois) >= MAXRESULTS_PER_TILE:
                 truncation_tiles += 1
 
-            added = 0
-            filtered_out = 0
+            kept = 0
+            filtered_nonny = 0
 
             for poi in pois:
                 pid = poi.get("ID")
@@ -201,18 +212,18 @@ def main():
 
                 row = poi_to_row(poi)
                 if row is None:
-                    filtered_out += 1
+                    filtered_nonny += 1
                     continue
 
                 seen_ids.add(pid)
                 rows.append(row)
-                added += 1
+                kept += 1
 
-            kept_nonny += filtered_out
+            filtered_nonny_total += filtered_nonny
 
             print(
                 f"Tile ({x+1}/{TILES_X},{y+1}/{TILES_Y}) "
-                f"returned {len(pois)}; kept {added}; filtered_nonNY {filtered_out}; unique_kept {len(seen_ids)}"
+                f"returned {len(pois)}; kept {kept}; filtered_nonNY {filtered_nonny}; unique_kept {len(seen_ids)}"
             )
             time.sleep(SLEEP_BETWEEN_CALLS_SEC)
 
@@ -220,13 +231,26 @@ def main():
     if not df.empty:
         df = df.dropna(subset=["lat", "lon"]).drop_duplicates(subset=["ocm_id"])
 
+    # DEBUG: show state distribution to prove NJ/CT are gone
+    if not df.empty and "state" in df.columns:
+        s = df["state"].fillna("").astype(str).str.strip()
+        print("\nTop states in OUTPUT (should be NY variants only):")
+        print(s.value_counts().head(20).to_string())
+
+        # Hard check: show any non-NY rows (should be zero)
+        sl = s.str.lower()
+        bad = df[~sl.isin(["ny", "new york"]) & ~sl.str.startswith("new york")]
+        if len(bad) > 0:
+            print("\nWARNING: Non-NY rows detected (showing 10):")
+            print(bad[["ocm_id", "state", "town", "address"]].head(10).to_string(index=False))
+
     df.to_csv(OUTPUT_CSV, index=False)
-    print(f"Saved {len(df)} NYS locations -> {OUTPUT_CSV}")
-    print(f"Filtered out non-NY candidates (spillover): {kept_nonny}")
+    print(f"\nSaved {len(df)} NYS locations -> {OUTPUT_CSV}")
+    print(f"Filtered out non-NY candidates (spillover): {filtered_nonny_total}")
 
     if truncation_tiles:
         print(
-            f"WARNING: {truncation_tiles} tiles returned >= {MAXRESULTS_PER_TILE} results.\n"
+            f"\nWARNING: {truncation_tiles} tiles returned >= {MAXRESULTS_PER_TILE} results.\n"
             f"Those tiles are likely capped. Increase TILES_X/TILES_Y (e.g., 14x14) to capture more."
         )
 
