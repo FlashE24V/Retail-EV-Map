@@ -1,18 +1,22 @@
 #!/usr/bin/env python3
 """
 Open Charge Map (OCM) -> NEW YORK STATE export (includes NYC) with:
-- Tiling (so you don't get stuck at 500 results)
+- Tiling (avoids the 500-result cap)
 - Filters OUT NJ/CT/etc by keeping only StateOrProvince that looks like NY
 - Includes operator (charging company)
 - Includes plug types + max kW summary
-- Prints a state breakdown so you can confirm NJ/CT are gone
+- Prints state breakdown so you can confirm NJ/CT are gone
+
+IMPORTANT (for your repo/workflow):
+- Your workflow is committing: ocm_nyc_retail_locations.csv
+- So this script MUST write to that same filename.
 
 GitHub Actions:
 - Repo Secret: OCM_API_KEY
-- Workflow runs: python pull_ocm_nyc.py  (name can stay; script purpose is NYS)
+- Workflow runs: python pull_ocm_nyc.py
 
 Output:
-- ocm_nys_retail_locations.csv
+- ocm_nyc_retail_locations.csv  (YES, name stays NYC, but contents are NYS-only + NYC)
 """
 
 import os
@@ -32,7 +36,7 @@ if not API_KEY:
 URL = "https://api.openchargemap.io/v3/poi"
 
 # Approx New York State bounding box (covers Long Island + upstate)
-# NOTE: bbox will include some spillover, which we remove via state filter below.
+# NOTE: bbox will include some spillover, which we remove via NY-only state filter below.
 NW_LAT, NW_LON = 45.0159, -79.7624
 SE_LAT, SE_LON = 40.4961, -71.8562
 
@@ -44,7 +48,8 @@ MAXRESULTS_PER_TILE = 500
 SLEEP_BETWEEN_CALLS_SEC = 0.25
 TIMEOUT_SEC = 90
 
-OUTPUT_CSV = "ocm_nys_retail_locations.csv"
+# IMPORTANT: must match what your workflow commits + what your map loads
+OUTPUT_CSV = "ocm_nyc_retail_locations.csv"
 
 CLIENT_NAME = "NY-Retail-Leaflet-Map"
 
@@ -71,6 +76,7 @@ def fetch_tile(nw_lat: float, nw_lon: float, se_lat: float, se_lon: float):
         "output": "json",
 
         # IMPORTANT: keep reference objects like OperatorInfo / ConnectionType / CurrentType
+        # If compact=True you often won't see operator names.
         "compact": False,
         "verbose": True,
 
@@ -87,11 +93,11 @@ def fetch_tile(nw_lat: float, nw_lon: float, se_lat: float, se_lon: float):
 
 def is_new_york_state(addr: dict) -> bool:
     """
-    Keeps NY only. This catches common variants:
+    Keeps NY only. Catches common variants:
       - "NY"
       - "New York"
       - "New York State"
-      - any string starting with "new york"
+      - anything starting with "new york"
     """
     state = (addr.get("StateOrProvince") or "").strip().lower()
     return state in ("ny", "new york") or state.startswith("new york")
@@ -237,7 +243,6 @@ def main():
         print("\nTop states in OUTPUT (should be NY variants only):")
         print(s.value_counts().head(20).to_string())
 
-        # Hard check: show any non-NY rows (should be zero)
         sl = s.str.lower()
         bad = df[~sl.isin(["ny", "new york"]) & ~sl.str.startswith("new york")]
         if len(bad) > 0:
@@ -247,6 +252,7 @@ def main():
     df.to_csv(OUTPUT_CSV, index=False)
     print(f"\nSaved {len(df)} NYS locations -> {OUTPUT_CSV}")
     print(f"Filtered out non-NY candidates (spillover): {filtered_nonny_total}")
+    print(f"FINAL OUTPUT FILE: {OUTPUT_CSV}")
 
     if truncation_tiles:
         print(
