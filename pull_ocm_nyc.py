@@ -5,18 +5,17 @@ Open Charge Map (OCM) -> NEW YORK STATE export (includes NYC) with:
 - Filters OUT NJ/CT/etc by keeping only StateOrProvince that looks like NY
 - Includes operator (charging company)
 - Includes plug types + max kW summary
-- Prints state breakdown so you can confirm NJ/CT are gone
-
-IMPORTANT (for your repo/workflow):
-- Your workflow is committing: ocm_nyc_retail_locations.csv
-- So this script MUST write to that same filename.
+- Cleans dataset:
+    * removes blank operator
+    * removes Tesla operator
+    * removes Private usage types (includes "Private - Restricted Access")
 
 GitHub Actions:
 - Repo Secret: OCM_API_KEY
 - Workflow runs: python pull_ocm_nyc.py
 
 Output:
-- ocm_nyc_retail_locations.csv  (YES, name stays NYC, but contents are NYS-only + NYC)
+- ocm_nyc_retail_locations.csv
 """
 
 import os
@@ -234,25 +233,35 @@ def main():
             time.sleep(SLEEP_BETWEEN_CALLS_SEC)
 
     df = pd.DataFrame(rows)
+
+    # Basic cleanup
     if not df.empty:
         df = df.dropna(subset=["lat", "lon"]).drop_duplicates(subset=["ocm_id"])
 
-    # DEBUG: show state distribution to prove NJ/CT are gone
+        # -----------------------------
+        # CLEANING FILTERS (your asks)
+        # -----------------------------
+        df["operator"] = df["operator"].fillna("").astype(str).str.strip()
+        df["usage_type"] = df["usage_type"].fillna("").astype(str).str.strip()
+
+        # 1) remove blank operator
+        df = df[df["operator"] != ""]
+
+        # 2) remove Tesla operator
+        df = df[~df["operator"].str.lower().str.contains("tesla", na=False)]
+
+        # 3) remove Private + Private - Restricted Access (and any other private variants)
+        df = df[~df["usage_type"].str.lower().str.contains("private", na=False)]
+
+    # DEBUG: show what states remain (should be NY only)
     if not df.empty and "state" in df.columns:
         s = df["state"].fillna("").astype(str).str.strip()
         print("\nTop states in OUTPUT (should be NY variants only):")
         print(s.value_counts().head(20).to_string())
 
-        sl = s.str.lower()
-        bad = df[~sl.isin(["ny", "new york"]) & ~sl.str.startswith("new york")]
-        if len(bad) > 0:
-            print("\nWARNING: Non-NY rows detected (showing 10):")
-            print(bad[["ocm_id", "state", "town", "address"]].head(10).to_string(index=False))
-
     df.to_csv(OUTPUT_CSV, index=False)
-    print(f"\nSaved {len(df)} NYS locations -> {OUTPUT_CSV}")
+    print(f"\nSaved {len(df)} NY retail locations -> {OUTPUT_CSV}")
     print(f"Filtered out non-NY candidates (spillover): {filtered_nonny_total}")
-    print(f"FINAL OUTPUT FILE: {OUTPUT_CSV}")
 
     if truncation_tiles:
         print(
