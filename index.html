@@ -40,7 +40,6 @@
       color: #6b7280;
     }
 
-    /* ⚡ circle icon */
     .bolt-circle {
       width: 26px;
       height: 26px;
@@ -56,10 +55,9 @@
       transform: translate(-1px, -1px);
       position: relative;
     }
-    .bolt-l2 { background: #2563eb; } /* blue */
-    .bolt-l3 { background: #16a34a; } /* green */
+    .bolt-l2 { background: #2563eb; }
+    .bolt-l3 { background: #16a34a; }
 
-    /* Optional operator badge (tiny) */
     .op-badge {
       position: absolute;
       right: -8px;
@@ -86,7 +84,6 @@
     .popup .addr { margin-top:6px; color:#374151; }
     .popup .links { margin-top:8px; }
 
-    /* Footer */
     .footer-attrib {
       position: fixed;
       left: 0;
@@ -124,33 +121,16 @@
     // ======================
     var OCM_CSV_URL = 'ocm_nyc_retail_locations.csv?v=' + Date.now();
 
-    // ---- HARD NY STATE LIMITS (lat/lon bbox) ----
-    // Approx NYS extents (covers whole state without Canada/PA/CT spill):
-    // South ~40.49  North ~45.02  West ~-79.76  East ~-71.85
-    var NY_BBOX = {
-      south: 40.49,
-      north: 45.02,
-      west: -79.76,
-      east: -71.85
-    };
+    // Put this file next to index.html
+    var NY_GEOJSON_URL = 'ny_state.geojson?v=' + Date.now();
 
-    // Lock map to NY bounds (keeps panning reasonable + avoids zooming out to other places)
-    var nyBounds = L.latLngBounds(
-      [NY_BBOX.south, NY_BBOX.west],
-      [NY_BBOX.north, NY_BBOX.east]
-    );
-
-    // Default view (will fitBounds after load)
-    var map = L.map('map', {
-      maxBounds: nyBounds,
-      maxBoundsViscosity: 0.85
-    }).setView([42.9, -75.0], 6);
+    // Default view (we'll fit to NY boundary when loaded)
+    var map = L.map('map').setView([42.9, -75.0], 6);
 
     L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
       attribution: '&copy; OpenStreetMap contributors'
     }).addTo(map);
 
-    // ✅ Clusters + no blue outline on hover
     var clusterGroup = L.markerClusterGroup({
       showCoverageOnHover: false,
       spiderfyOnMaxZoom: true,
@@ -159,8 +139,13 @@
     map.addLayer(clusterGroup);
 
     // ======================
-    // HELPERS
+    // NY POLYGON + POINT-IN-POLYGON
     // ======================
+    var nyGeo = null;       // raw geojson
+    var nyLayer = null;     // leaflet layer (optional outline)
+    var nyBounds = null;    // leaflet bounds
+    var nyRings = [];       // array of rings (each ring: [{lat,lon},...]) for point-in-poly
+
     function cleanStr(v) {
       if (v === undefined || v === null) return '';
       return ('' + v).trim();
@@ -176,15 +161,127 @@
       return cleanStr(op).replace(/\s+/g, ' ');
     }
 
-    function isInNY(lat, lon) {
-      return (
-        lat >= NY_BBOX.south && lat <= NY_BBOX.north &&
-        lon >= NY_BBOX.west  && lon <= NY_BBOX.east
-      );
+    // Ray casting point-in-ring (lon=x, lat=y)
+    function pointInRing(lat, lon, ring) {
+      var inside = false;
+      for (var i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+        var xi = ring[i].lon, yi = ring[i].lat;
+        var xj = ring[j].lon, yj = ring[j].lat;
+
+        var intersect = ((yi > lat) !== (yj > lat)) &&
+                        (lon < (xj - xi) * (lat - yi) / ((yj - yi) || 1e-12) + xi);
+        if (intersect) inside = !inside;
+      }
+      return inside;
     }
 
+    // Supports MultiPolygon and Polygon.
+    // Treats "inside NY" if inside any outer ring AND not inside a hole ring.
+    function pointInNY(lat, lon) {
+      if (!nyGeo) return true; // if boundary not loaded yet, don't hide anything
+      // Quick bounds reject
+      if (nyBounds && !nyBounds.contains([lat, lon])) return false;
+
+      // nyRings structure: [{ outers:[ring...], holes:[ring...] }, ...]
+      for (var p = 0; p < nyRings.length; p++) {
+        var poly = nyRings[p];
+        var inOuter = false;
+        for (var o = 0; o < poly.outers.length; o++) {
+          if (pointInRing(lat, lon, poly.outers[o])) { inOuter = true; break; }
+        }
+        if (!inOuter) continue;
+
+        var inHole = false;
+        for (var h = 0; h < poly.holes.length; h++) {
+          if (pointInRing(lat, lon, poly.holes[h])) { inHole = true; break; }
+        }
+        if (!inHole) return true;
+      }
+      return false;
+    }
+
+    function extractRingsFromGeoJSON(gj) {
+      // Output array of polygons: {outers:[ring], holes:[ring]}
+      var out = [];
+
+      function coordsToRing(coords) {
+        // coords: [[lon,lat], ...]
+        var ring = [];
+        for (var i = 0; i < coords.length; i++) {
+          ring.push({ lon: coords[i][0], lat: coords[i][1] });
+        }
+        return ring;
+      }
+
+      function handlePolygonCoords(polyCoords) {
+        // polyCoords: [ outerRingCoords, hole1Coords, hole2Coords, ... ]
+        var poly = { outers: [], holes: [] };
+        if (polyCoords.length > 0) poly.outers.push(coordsToRing(polyCoords[0]));
+        for (var i = 1; i < polyCoords.length; i++) {
+          poly.holes.push(coordsToRing(polyCoords[i]));
+        }
+        out.push(poly);
+      }
+
+      var geom = gj.type === 'FeatureCollection'
+        ? (gj.features[0] && gj.features[0].geometry)
+        : (gj.type === 'Feature' ? gj.geometry : gj);
+
+      if (!geom) return out;
+
+      if (geom.type === 'Polygon') {
+        handlePolygonCoords(geom.coordinates);
+      } else if (geom.type === 'MultiPolygon') {
+        for (var i = 0; i < geom.coordinates.length; i++) {
+          handlePolygonCoords(geom.coordinates[i]);
+        }
+      }
+      return out;
+    }
+
+    function loadNYBoundary(cb) {
+      fetch(NY_GEOJSON_URL)
+        .then(function(r){
+          if (!r.ok) throw new Error('Failed to load ny_state.geojson (' + r.status + ')');
+          return r.json();
+        })
+        .then(function(gj){
+          nyGeo = gj;
+
+          // Optional outline on map (kept very light)
+          nyLayer = L.geoJSON(gj, {
+            style: function() {
+              return { weight: 2, opacity: 0.35, fillOpacity: 0.02 };
+            }
+          }).addTo(map);
+
+          nyBounds = nyLayer.getBounds();
+          nyRings = extractRingsFromGeoJSON(gj);
+
+          // Lock view to NY polygon
+          if (nyBounds && nyBounds.isValid()) {
+            map.fitBounds(nyBounds.pad(0.05));
+            map.setMaxBounds(nyBounds.pad(0.15));
+          }
+
+          cb && cb();
+        })
+        .catch(function(err){
+          console.error(err);
+          alert(
+            "Couldn't load ny_state.geojson.\n\n" +
+            "Place 'ny_state.geojson' next to index.html in the same folder.\n" +
+            "Then refresh.\n\n" +
+            "Error: " + err.message
+          );
+          cb && cb();
+        });
+    }
+
+    // ======================
+    // YOUR EXISTING HELPERS
+    // ======================
     function isDcFast(row) {
-      // Prefer explicit has_dc_fast; fallback to levels/max_kw
       var hasDc = row.has_dc_fast;
       if (hasDc === 1 || hasDc === true || ('' + hasDc).toLowerCase() === 'true') return true;
 
@@ -278,7 +375,7 @@
     // FILTER STATE
     // ======================
     var operatorFilter = 'ALL';
-    var levelFilter = 'ALL'; // ALL | Level 2 | DC Fast (Level 3)
+    var levelFilter = 'ALL';
 
     function passesOperator(row) {
       if (operatorFilter === 'ALL') return true;
@@ -371,8 +468,8 @@
         var lat = row.lat, lon = row.lon;
         if (typeof lat !== 'number' || typeof lon !== 'number' || isNaN(lat) || isNaN(lon)) return;
 
-        // ✅ HARD NY STATE FILTER (ignore anything outside NY)
-        if (!isInNY(lat, lon)) return;
+        // ✅ ONLY NEW YORK STATE (polygon)
+        if (!pointInNY(lat, lon)) return;
 
         if (!passesOperator(row)) return;
         if (!passesLevel(row)) return;
@@ -392,66 +489,58 @@
         any = true;
       });
 
-      // Fit to visible markers (NY-only)
       if (any) {
         var b = clusterGroup.getBounds();
         if (b && b.isValid()) map.fitBounds(b.pad(0.12));
-      } else {
-        // If filters remove everything, fall back to NY view
+      } else if (nyBounds && nyBounds.isValid()) {
         map.fitBounds(nyBounds.pad(0.05));
       }
     }
 
     // ======================
-    // LOAD CSV
+    // LOAD CSV (after NY boundary loads)
     // ======================
-    Papa.parse(OCM_CSV_URL, {
-      download: true,
-      header: true,
-      dynamicTyping: true,
-      complete: function(res) {
+    function loadCSVThenInitUI() {
+      Papa.parse(OCM_CSV_URL, {
+        download: true,
+        header: true,
+        dynamicTyping: true,
+        complete: function(res) {
+          allRows = (res && res.data ? res.data : []).filter(function(r){
+            return r && typeof r.lat === 'number' && typeof r.lon === 'number' && !isNaN(r.lat) && !isNaN(r.lon);
+          });
 
-        // Keep all valid geo rows (we'll NY-filter during render)
-        allRows = (res && res.data ? res.data : []).filter(function(r){
-          return r && typeof r.lat === 'number' && typeof r.lon === 'number' && !isNaN(r.lat) && !isNaN(r.lon);
-        });
+          // Build operator list using NY-only rows
+          var opsSet = {};
+          allRows.forEach(function(r){
+            if (!pointInNY(r.lat, r.lon)) return;
 
-        // Build operator list based on NY-only rows (so dropdown doesn't include out-of-state ops)
-        var opsSet = {};
-        allRows.forEach(function(r){
-          var lat = r.lat, lon = r.lon;
-          if (typeof lat !== 'number' || typeof lon !== 'number' || isNaN(lat) || isNaN(lon)) return;
+            var op = normOperator(r.operator);
+            if (!op) return;
+            if (op === 'Blink Charging Europe') return;
 
-          if (!isInNY(lat, lon)) return;
+            opsSet[op] = true;
+          });
 
-          var op = normOperator(r.operator);
-          if (!op) return;
+          var ops = Object.keys(opsSet).sort(function(a,b){ return a.localeCompare(b); });
 
-          // ✅ remove from Operators dropdown only
-          if (op === 'Blink Charging Europe') return;
+          addOperatorControl(ops);
+          addLevelControl();
 
-          opsSet[op] = true;
-        });
+          operatorFilter = 'ALL';
+          levelFilter = 'ALL';
 
-        var ops = Object.keys(opsSet).sort(function(a,b){ return a.localeCompare(b); });
+          render();
+        },
+        error: function(err) {
+          console.error('CSV parse error:', err);
+          alert('Could not load ocm_nyc_retail_locations.csv. Make sure it is in the same folder as index.html.');
+        }
+      });
+    }
 
-        addOperatorControl(ops);
-        addLevelControl();
-
-        // Reset filters to avoid “stuck” state
-        operatorFilter = 'ALL';
-        levelFilter = 'ALL';
-
-        // Start with NY view even before fitBounds
-        map.fitBounds(nyBounds.pad(0.05));
-
-        render();
-      },
-      error: function(err) {
-        console.error('CSV parse error:', err);
-        alert('Could not load ocm_nyc_retail_locations.csv. Make sure it is in the same folder as index.html.');
-      }
-    });
+    // Load NY boundary first, then CSV (so filtering works immediately)
+    loadNYBoundary(loadCSVThenInitUI);
   </script>
 </body>
 </html>
