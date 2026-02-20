@@ -22,9 +22,25 @@
       padding: 8px 10px;
       border-radius: 8px;
       box-shadow: 0 1px 6px rgba(0,0,0,0.25);
-      font: 14px system-ui, -apple-system, Arial, sans-serif;
+      font: 14px/1.2 system-ui, -apple-system, Arial, sans-serif;
+    }
+    .controls .title { font-weight: 700; margin-bottom: 6px; display:block; }
+    .controls select {
+      width: 240px;
+      max-width: 70vw;
+      padding: 6px 8px;
+      border-radius: 8px;
+      border: 1px solid #e5e7eb;
+      background: #fff;
+      font-size: 14px;
+    }
+    .controls .hint {
+      margin-top: 6px;
+      font-size: 12px;
+      color: #6b7280;
     }
 
+    /* ⚡ circle icon */
     .bolt-circle {
       width: 26px;
       height: 26px;
@@ -35,14 +51,15 @@
       border: 2px solid #222;
       color: #fff;
       font-size: 16px;
+      line-height: 1;
       box-shadow: 0 1px 4px rgba(0,0,0,0.25);
       transform: translate(-1px, -1px);
       position: relative;
     }
+    .bolt-l2 { background: #2563eb; } /* blue */
+    .bolt-l3 { background: #16a34a; } /* green */
 
-    .bolt-l2 { background: #2563eb; }
-    .bolt-l3 { background: #16a34a; }
-
+    /* Optional operator badge (tiny) */
     .op-badge {
       position: absolute;
       right: -8px;
@@ -54,13 +71,20 @@
       background: #111;
       color: #fff;
       border: 2px solid #fff;
+      box-shadow: 0 1px 4px rgba(0,0,0,0.25);
       font-size: 10px;
       display: flex;
       align-items: center;
       justify-content: center;
+      letter-spacing: .3px;
     }
 
     .leaflet-div-icon { background: transparent; border: none; }
+
+    .popup .row { margin-top:6px; }
+    .popup .k { font-weight:700; }
+    .popup .addr { margin-top:6px; color:#374151; }
+    .popup .links { margin-top:8px; }
 
     /* ===== Footer Attribution ===== */
     .footer-attrib {
@@ -72,91 +96,309 @@
       background: rgba(255,255,255,0.92);
       border-top: 1px solid rgba(0,0,0,0.12);
       padding: 6px 12px;
-      font: 12px system-ui, -apple-system, Arial, sans-serif;
+      font: 12px/1.2 system-ui, -apple-system, Arial, sans-serif;
       color: #374151;
       display: flex;
+      gap: 10px;
       justify-content: space-between;
+      align-items: center;
       backdrop-filter: blur(4px);
     }
-
-    .footer-attrib a {
-      color: #111;
-      font-weight: 600;
-      text-decoration: none;
-    }
-
+    .footer-attrib a { color: #111; text-decoration: none; font-weight: 600; }
     .footer-attrib a:hover { text-decoration: underline; }
-
     .leaflet-bottom { margin-bottom: 28px; }
   </style>
 </head>
 
 <body>
-
   <div id="map"></div>
 
   <div class="footer-attrib">
-    <div>Data from <a href="https://openchargemap.org" target="_blank">OpenChargeMap</a></div>
-    <div>Retail EV charging locations</div>
+    <div>Data from <a href="https://openchargemap.org" target="_blank" rel="noopener">OpenChargeMap</a></div>
+    <div style="opacity:.8;">Retail EV charging locations</div>
   </div>
 
-<script>
-  var OCM_CSV_URL = 'ocm_nyc_retail_locations.csv?v=' + Date.now();
+  <script>
+    // ======================
+    // CONFIG
+    // ======================
+    // Put this CSV in the same folder as index.html
+    var OCM_CSV_URL = 'ocm_nyc_retail_locations.csv?v=' + Date.now();
 
-  var map = L.map('map').setView([40.7128, -74.0060], 10);
+    // Center NYC-ish by default; will fitBounds after load
+    var map = L.map('map').setView([40.7128, -74.0060], 10);
 
-  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-    attribution: '&copy; OpenStreetMap contributors'
-  }).addTo(map);
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      attribution: '&copy; OpenStreetMap contributors'
+    }).addTo(map);
 
-  var clusterGroup = L.markerClusterGroup({ disableClusteringAtZoom: 17 });
-  map.addLayer(clusterGroup);
+    // ✅ Keep clusters, but remove the blue coverage outline
+    var clusterGroup = L.markerClusterGroup({
+      showCoverageOnHover: false,  // <— removes blue outline
+      spiderfyOnMaxZoom: true,
+      disableClusteringAtZoom: 17
+    });
+    map.addLayer(clusterGroup);
 
-  function isDcFast(row){
-    if(row.has_dc_fast === 1 || row.has_dc_fast === true) return true;
-    var maxKw = parseFloat(row.max_kw);
-    return !isNaN(maxKw) && maxKw >= 50;
-  }
+    // ======================
+    // HELPERS
+    // ======================
+    function cleanStr(v) {
+      if (v === undefined || v === null) return '';
+      return ('' + v).trim();
+    }
 
-  function iconHTML(level){
-    return '<div class="bolt-circle '+(level?'bolt-l3':'bolt-l2')+'">⚡</div>';
-  }
+    function escapeHtml(s) {
+      return ('' + (s ?? '')).replace(/[&<>"']/g, function(m) {
+        return ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]);
+      });
+    }
 
-  function popup(row){
-    return '<b>'+ (row.name || 'EV Site') +'</b><br>' +
-           (row.operator || '') + '<br>' +
-           (row.address || '');
-  }
+    function normOperator(op) {
+      return cleanStr(op).replace(/\s+/g, ' ');
+    }
 
-  Papa.parse(OCM_CSV_URL,{
-    download:true,
-    header:true,
-    dynamicTyping:true,
-    complete:function(res){
+    function isDcFast(row) {
+      // Prefer explicit has_dc_fast; fallback to levels/max_kw
+      var hasDc = row.has_dc_fast;
+      if (hasDc === 1 || hasDc === true || ('' + hasDc).toLowerCase() === 'true') return true;
 
-      var bounds = [];
+      var levels = cleanStr(row.charging_levels).toLowerCase();
+      if (levels.includes('level 3')) return true;
 
-      res.data.forEach(function(row){
-        if(!row.lat || !row.lon) return;
+      var maxKw = parseFloat(row.max_kw);
+      if (!isNaN(maxKw) && maxKw >= 50) return true;
 
-        var level = isDcFast(row);
+      return false;
+    }
 
-        var marker = L.marker([row.lat,row.lon],{
-          icon: L.divIcon({
-            html: iconHTML(level),
-            iconSize:[26,26],
-            className:''
-          })
-        }).bindPopup(popup(row));
+    function chargingLevelLabel(row) {
+      return isDcFast(row) ? 'DC Fast (Level 3)' : 'Level 2';
+    }
+
+    function makeOperatorCode(op) {
+      var t = (op || '').toLowerCase();
+      if (t.includes('chargepoint')) return 'CP';
+      if (t.includes('evgo')) return 'EVgo';
+      if (t.includes('blink')) return 'BLK';
+      if (t.includes('flo')) return 'FLO';
+      if (t.includes('revel')) return 'RVL';
+      if (t.includes('ampup')) return 'AMP';
+      if (t.includes('powerflex')) return 'PFX';
+      if (t.includes('ev connect')) return 'EVC';
+      if (t.includes('ev gateway')) return 'EVG';
+      if (t.includes('noodoe')) return 'NOD';
+      if (t.includes('vialynk')) return 'VIA';
+      if (t.includes('ionna')) return 'ION';
+      var s = normOperator(op);
+      return s ? s.replace(/[^A-Za-z]/g,'').slice(0,3).toUpperCase() : '';
+    }
+
+    function boltIconHTML(levelClass, operatorText) {
+      var SHOW_BADGE = true;
+      var badge = '';
+      if (SHOW_BADGE) {
+        var code = makeOperatorCode(operatorText);
+        if (code) badge = '<span class="op-badge">' + escapeHtml(code) + '</span>';
+      }
+      return '<div class="bolt-circle ' + levelClass + '">⚡' + badge + '</div>';
+    }
+
+    function makePopup(row) {
+      var name = cleanStr(row.name) || 'EV Charging Site';
+      var op = normOperator(row.operator);
+      var level = chargingLevelLabel(row);
+
+      var plugs = cleanStr(row.plug_types);
+      var currents = cleanStr(row.current_types);
+      var levels = cleanStr(row.charging_levels);
+      var maxKw = (row.max_kw !== undefined && row.max_kw !== null && row.max_kw !== '') ? row.max_kw : '';
+      var points = (row.num_points !== undefined && row.num_points !== null && row.num_points !== '') ? row.num_points : '';
+      var status = cleanStr(row.status_type);
+      var usage = cleanStr(row.usage_type);
+
+      var addr = cleanStr(row.address);
+      var town = cleanStr(row.town);
+      var state = cleanStr(row.state) || 'NY';
+      var postcode = cleanStr(row.postcode);
+
+      var lat = row.lat, lon = row.lon;
+      var apple = 'http://maps.apple.com/?daddr=' + lat + ',' + lon;
+      var gmaps = 'https://www.google.com/maps/dir/?api=1&destination=' + lat + ',' + lon;
+
+      var addrLine = [addr, town, state, postcode].filter(Boolean).join(', ');
+
+      var html = '<div class="popup" style="min-width:260px;">' +
+        '<strong>' + escapeHtml(name) + '</strong>' +
+        '<div class="row"><span class="k">Charging Level:</span> ' + escapeHtml(level) + '</div>' +
+        (op ? '<div class="row"><span class="k">Operator:</span> ' + escapeHtml(op) + '</div>' : '') +
+        (points ? '<div class="row"><span class="k">Ports (reported):</span> ' + escapeHtml(points) + '</div>' : '') +
+        (maxKw !== '' ? '<div class="row"><span class="k">Max kW:</span> ' + escapeHtml(maxKw) + '</div>' : '') +
+        (plugs ? '<div class="row"><span class="k">Plug Types:</span> ' + escapeHtml(plugs) + '</div>' : '') +
+        (currents ? '<div class="row"><span class="k">Current Types:</span> ' + escapeHtml(currents) + '</div>' : '') +
+        (levels ? '<div class="row"><span class="k">OCM Levels:</span> ' + escapeHtml(levels) + '</div>' : '') +
+        (status ? '<div class="row"><span class="k">OCM Status:</span> ' + escapeHtml(status) + '</div>' : '') +
+        (usage ? '<div class="row"><span class="k">Access:</span> ' + escapeHtml(usage) + '</div>' : '') +
+        (addrLine ? '<div class="addr">' + escapeHtml(addrLine) + '</div>' : '') +
+        '<div class="links">' +
+          '<a href="' + apple + '" target="_blank" rel="noopener">Directions (Apple)</a> &nbsp;|&nbsp; ' +
+          '<a href="' + gmaps + '" target="_blank" rel="noopener">Directions (Google)</a>' +
+        '</div>' +
+      '</div>';
+
+      return html;
+    }
+
+    // ======================
+    // FILTER STATE
+    // ======================
+    var operatorFilter = 'ALL';
+    var levelFilter = 'ALL'; // ALL | Level 2 | DC Fast (Level 3)
+
+    function passesOperator(row) {
+      if (operatorFilter === 'ALL') return true;
+      var op = normOperator(row.operator);
+      return op === operatorFilter;
+    }
+
+    function passesLevel(row) {
+      if (levelFilter === 'ALL') return true;
+      return chargingLevelLabel(row) === levelFilter;
+    }
+
+    // ======================
+    // UI CONTROLS
+    // ======================
+    var operatorControl, levelControl;
+
+    function addOperatorControl(operatorsSorted) {
+      operatorControl = L.control({position: 'topleft'});
+      operatorControl.onAdd = function () {
+        var div = L.DomUtil.create('div', 'controls');
+        div.innerHTML =
+          '<span class="title">Operator</span>' +
+          '<select id="operatorSelect"></select>' +
+          '<div class="hint">Tip: pick an operator, then filter Level 2 vs DC Fast.</div>';
+
+        L.DomEvent.disableClickPropagation(div);
+        L.DomEvent.disableScrollPropagation(div);
+
+        var sel = div.querySelector('#operatorSelect');
+
+        var allOpt = document.createElement('option');
+        allOpt.value = 'ALL';
+        allOpt.textContent = 'All Operators';
+        sel.appendChild(allOpt);
+
+        (operatorsSorted || []).forEach(function(op){
+          var o = document.createElement('option');
+          o.value = op;
+          o.textContent = op;
+          sel.appendChild(o);
+        });
+
+        sel.addEventListener('change', function(){
+          operatorFilter = sel.value;
+          render();
+        });
+
+        return div;
+      };
+      operatorControl.addTo(map);
+    }
+
+    function addLevelControl() {
+      levelControl = L.control({position: 'topright'});
+      levelControl.onAdd = function () {
+        var div = L.DomUtil.create('div', 'controls');
+        div.innerHTML =
+          '<span class="title">Charging Level</span>' +
+          '<select id="levelSelect">' +
+            '<option value="ALL">All Levels</option>' +
+            '<option value="Level 2">Level 2</option>' +
+            '<option value="DC Fast (Level 3)">DC Fast (Level 3)</option>' +
+          '</select>';
+
+        L.DomEvent.disableClickPropagation(div);
+        L.DomEvent.disableScrollPropagation(div);
+
+        var sel = div.querySelector('#levelSelect');
+        sel.addEventListener('change', function(){
+          levelFilter = sel.value;
+          render();
+        });
+
+        return div;
+      };
+      levelControl.addTo(map);
+    }
+
+    // ======================
+    // RENDER
+    // ======================
+    var allRows = [];
+
+    function render() {
+      clusterGroup.clearLayers();
+      var any = false;
+
+      allRows.forEach(function(row){
+        var lat = row.lat, lon = row.lon;
+        if (typeof lat !== 'number' || typeof lon !== 'number' || isNaN(lat) || isNaN(lon)) return;
+
+        if (!passesOperator(row)) return;
+        if (!passesLevel(row)) return;
+
+        var levelClass = isDcFast(row) ? 'bolt-l3' : 'bolt-l2';
+
+        var icon = L.divIcon({
+          className: 'bolt-divicon',
+          iconSize: [26, 26],
+          html: boltIconHTML(levelClass, row.operator)
+        });
+
+        var marker = L.marker([lat, lon], { icon: icon })
+          .bindPopup(makePopup(row));
 
         clusterGroup.addLayer(marker);
-        bounds.push([row.lat,row.lon]);
+        any = true;
       });
 
-      if(bounds.length) map.fitBounds(bounds,{padding:[30,30]});
+      if (any) {
+        var b = clusterGroup.getBounds();
+        if (b && b.isValid()) map.fitBounds(b.pad(0.12));
+      }
     }
-  });
 
-</script>
+    // ======================
+    // LOAD CSV
+    // ======================
+    Papa.parse(OCM_CSV_URL, {
+      download: true,
+      header: true,
+      dynamicTyping: true,
+      complete: function(res) {
+        allRows = (res && res.data ? res.data : []).filter(function(r){
+          return r && typeof r.lat === 'number' && typeof r.lon === 'number' && !isNaN(r.lat) && !isNaN(r.lon);
+        });
+
+        // Build operator list
+        var opsSet = {};
+        allRows.forEach(function(r){
+          var op = normOperator(r.operator);
+          if (op) opsSet[op] = true;
+        });
+        var ops = Object.keys(opsSet).sort(function(a,b){ return a.localeCompare(b); });
+
+        addOperatorControl(ops);
+        addLevelControl();
+        render();
+      },
+      error: function(err) {
+        console.error('CSV parse error:', err);
+        alert('Could not load ocm_nyc_retail_locations.csv. Make sure it is in the same folder as index.html.');
+      }
+    });
+  </script>
 </body>
 </html>
