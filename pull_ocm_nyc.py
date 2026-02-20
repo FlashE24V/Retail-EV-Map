@@ -5,6 +5,8 @@ pull_ocm_nyc.py — OpenChargeMap NYC export that avoids the 500-result cap
 ✅ Reads API key from env var: OCM_API_KEY (store in GitHub Secrets)
 ✅ Sends key to OCM via required header: X-API-Key
 ✅ Covers ALL of NYC by adaptive tiling (recursively splits tiles that hit 500)
+✅ Hard-clips results to NYC bbox (prevents NJ/CT bleed from circle queries)
+✅ Excludes Tesla as an operator
 ✅ Dedupes by OCM ID
 ✅ Outputs CSV compatible with your Leaflet map:
    ocm_nyc_retail_locations.csv
@@ -54,6 +56,26 @@ TIMEOUT_S = 60               # request timeout
 
 
 # =========================
+# SAFE GET / STRING HELPERS
+# =========================
+
+def safe_get(d: Any, *path, default=""):
+    cur = d
+    for p in path:
+        if cur is None:
+            return default
+        if isinstance(cur, dict):
+            cur = cur.get(p)
+        else:
+            return default
+    return cur if cur is not None else default
+
+
+def norm_str(x) -> str:
+    return "" if x is None else str(x).strip()
+
+
+# =========================
 # GEO HELPERS
 # =========================
 
@@ -85,6 +107,29 @@ def split_bbox_4(b: Dict[str, float]) -> List[Dict[str, float]]:
     ]
 
 
+def item_in_bbox(item: Dict[str, Any], b: Dict[str, float]) -> bool:
+    """Hard-clip points to bbox (prevents NJ/CT bleed from circle radius)."""
+    addr = item.get("AddressInfo") or {}
+    lat = addr.get("Latitude")
+    lon = addr.get("Longitude")
+    try:
+        lat = float(lat)
+        lon = float(lon)
+    except Exception:
+        return False
+    return (b["south"] <= lat <= b["north"]) and (b["west"] <= lon <= b["east"])
+
+
+# =========================
+# FILTERS
+# =========================
+
+def is_tesla_operator(item: Dict[str, Any]) -> bool:
+    """Exclude any operator whose name contains 'tesla'."""
+    op = norm_str(safe_get(item, "OperatorInfo", "Title", default="")).lower()
+    return "tesla" in op
+
+
 # =========================
 # OCM API (robust)
 # =========================
@@ -106,7 +151,6 @@ def request_with_retries(url: str, params: Dict[str, Any], headers: Dict[str, st
 
             # Retryable statuses
             if r.status_code in (429, 500, 502, 503, 504, 403):
-                # 403 can happen from rate controls depending on policy; retry with backoff.
                 retry_after = r.headers.get("Retry-After")
                 if retry_after:
                     try:
@@ -167,6 +211,8 @@ def query_bbox_adaptive(b: Dict[str, float], seen: Set[int]) -> List[Dict[str, A
     """
     Recursively query a bbox by converting it to a circle query that covers the bbox.
     If the request returns 500 items, split into 4 and retry for each child.
+    - Hard-clips results to bbox (prevents NJ bleed)
+    - Excludes Tesla operator
     Dedup by OCM ID via `seen`.
     """
     lat_span, lon_span = bbox_spans(b)
@@ -182,7 +228,13 @@ def query_bbox_adaptive(b: Dict[str, float], seen: Set[int]) -> List[Dict[str, A
 
     data = ocm_query_circle(c_lat, c_lon, radius)
 
-    # If truncated, split (unless too small)
+    # ✅ Hard-clip to bbox first (removes NJ/CT/etc that circle pulls in)
+    data = [it for it in data if item_in_bbox(it, b)]
+
+    # ✅ Exclude Tesla
+    data = [it for it in data if not is_tesla_operator(it)]
+
+    # If still truncated, split (unless too small)
     if len(data) >= MAXRESULTS and lat_span > MIN_LAT_SPAN and lon_span > MIN_LON_SPAN:
         out: List[Dict[str, Any]] = []
         for child in split_bbox_4(b):
@@ -206,22 +258,6 @@ def query_bbox_adaptive(b: Dict[str, float], seen: Set[int]) -> List[Dict[str, A
 # =========================
 # FLATTEN TO YOUR CSV SHAPE
 # =========================
-
-def safe_get(d: Any, *path, default=""):
-    cur = d
-    for p in path:
-        if cur is None:
-            return default
-        if isinstance(cur, dict):
-            cur = cur.get(p)
-        else:
-            return default
-    return cur if cur is not None else default
-
-
-def norm_str(x) -> str:
-    return "" if x is None else str(x).strip()
-
 
 def compute_max_kw(item: Dict[str, Any]) -> str:
     conns = item.get("Connections") or []
@@ -332,7 +368,7 @@ def main():
     seen: Set[int] = set()
     items = query_bbox_adaptive(NYC_BBOX, seen)
 
-    print(f"Unique stations collected: {len(items)}")
+    print(f"Unique NYC stations collected (Tesla excluded): {len(items)}")
 
     rows: List[Dict[str, Any]] = []
     dropped = 0
