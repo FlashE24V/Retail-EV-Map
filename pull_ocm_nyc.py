@@ -1,30 +1,37 @@
 #!/usr/bin/env python3
 """
-OCM NYC CSV generator (tile + recursive split to avoid 500-result cap)
+pull_ocm_nyc.py — OpenChargeMap NYC export that avoids the 500-result cap
 
-Why needed:
-- OpenChargeMap limits geo searches to max 500 results.
-- One big NYC search will be truncated (missing chargers).
-- This script recursively splits the NYC area until each query returns < 500.
-
-Output:
-- ocm_nyc_retail_locations.csv  (fields aligned to your Leaflet map)
+✅ Reads API key from env var: OCM_API_KEY (store in GitHub Secrets)
+✅ Sends key to OCM via required header: X-API-Key
+✅ Covers ALL of NYC by adaptive tiling (recursively splits tiles that hit 500)
+✅ Dedupes by OCM ID
+✅ Outputs CSV compatible with your Leaflet map:
+   ocm_nyc_retail_locations.csv
 """
 
+import os
 import csv
 import math
 import time
+import random
+from typing import Dict, List, Tuple, Any, Set, Optional
+
 import requests
-from typing import Dict, List, Tuple, Any, Set
+
 
 # =========================
 # CONFIG
 # =========================
 
-API_KEY = "PUT_YOUR_OCM_API_KEY_HERE"  # or set to "" if your key isn't required
+# MUST be provided via environment variable (GitHub Secrets -> Actions)
+OCM_API_KEY = os.getenv("OCM_API_KEY", "").strip()
+if not OCM_API_KEY:
+    raise SystemExit("Missing OCM_API_KEY. Add it to GitHub Secrets and pass env: OCM_API_KEY to the workflow step.")
+
 OUT_CSV = "ocm_nyc_retail_locations.csv"
 
-# NYC bounding box (safe)
+# NYC bounding box (safe, covers all 5 boroughs)
 NYC_BBOX = {
     "south": 40.4774,
     "north": 40.9176,
@@ -32,34 +39,40 @@ NYC_BBOX = {
     "east": -73.7004,
 }
 
-# If a tile still returns 500, we split it. Stop splitting below these sizes:
-MIN_LAT_SPAN = 0.01   # ~1.1 km
-MIN_LON_SPAN = 0.01   # ~0.8 km in NYC lat
-
-# Request tuning
+# OCM geo searches cap results. We split tiles when we hit this cap.
 MAXRESULTS = 500
-PAUSE_S = 0.25  # politeness delay
 
-# Optional: filter to "public-ish" usage types later if you want
-# For now, we do NOT filter, because filtering is how stations go missing.
+# Stop splitting when the tile is already small.
+# These are degrees; 0.01 deg ~ 1.1 km lat; lon ~ 0.8 km around NYC
+MIN_LAT_SPAN = 0.01
+MIN_LON_SPAN = 0.01
+
+# API etiquette / reliability
+PAUSE_S = 0.6                # base delay between requests
+MAX_RETRIES = 6              # retries for 429/5xx/occasional 403 rate blocks
+TIMEOUT_S = 60               # request timeout
+
 
 # =========================
 # GEO HELPERS
 # =========================
 
-def haversine_km(lat1, lon1, lat2, lon2) -> float:
+def haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     R = 6371.0088
     phi1, phi2 = math.radians(lat1), math.radians(lat2)
     dphi = math.radians(lat2 - lat1)
     dlmb = math.radians(lon2 - lon1)
-    a = math.sin(dphi/2)**2 + math.cos(phi1)*math.cos(phi2)*math.sin(dlmb/2)**2
+    a = math.sin(dphi / 2) ** 2 + math.cos(phi1) * math.cos(phi2) * math.sin(dlmb / 2) ** 2
     return 2 * R * math.asin(math.sqrt(a))
 
+
 def bbox_center(b: Dict[str, float]) -> Tuple[float, float]:
-    return ((b["south"] + b["north"]) / 2.0, (b["west"] + b["east"]) / 2.0)
+    return (b["south"] + b["north"]) / 2.0, (b["west"] + b["east"]) / 2.0
+
 
 def bbox_spans(b: Dict[str, float]) -> Tuple[float, float]:
     return (b["north"] - b["south"], b["east"] - b["west"])
+
 
 def split_bbox_4(b: Dict[str, float]) -> List[Dict[str, float]]:
     mid_lat = (b["south"] + b["north"]) / 2.0
@@ -71,19 +84,68 @@ def split_bbox_4(b: Dict[str, float]) -> List[Dict[str, float]]:
         {"south": mid_lat, "north": b["north"], "west": mid_lon, "east": b["east"]},  # NE
     ]
 
+
 # =========================
-# OCM API
+# OCM API (robust)
 # =========================
+
+def request_with_retries(url: str, params: Dict[str, Any], headers: Dict[str, str]) -> List[Dict[str, Any]]:
+    """
+    Make a GET request with retry/backoff for transient failures (429, 5xx, occasional 403).
+    Returns parsed JSON list.
+    """
+    last_err: Optional[Exception] = None
+    for attempt in range(1, MAX_RETRIES + 1):
+        try:
+            r = requests.get(url, params=params, headers=headers, timeout=TIMEOUT_S)
+
+            # Success
+            if r.status_code == 200:
+                data = r.json()
+                return data if isinstance(data, list) else []
+
+            # Retryable statuses
+            if r.status_code in (429, 500, 502, 503, 504, 403):
+                # 403 can happen from rate controls depending on policy; retry with backoff.
+                retry_after = r.headers.get("Retry-After")
+                if retry_after:
+                    try:
+                        sleep_s = float(retry_after)
+                    except Exception:
+                        sleep_s = None
+                else:
+                    sleep_s = None
+
+                # Exponential backoff + jitter
+                base = 0.8 * (2 ** (attempt - 1))
+                jitter = random.uniform(0.0, 0.6)
+                wait = sleep_s if sleep_s is not None else min(20.0, base + jitter)
+
+                print(f"OCM HTTP {r.status_code} (attempt {attempt}/{MAX_RETRIES}). Backing off {wait:.1f}s...")
+                time.sleep(wait)
+                continue
+
+            # Non-retryable error
+            r.raise_for_status()
+
+        except Exception as e:
+            last_err = e
+            base = 0.8 * (2 ** (attempt - 1))
+            jitter = random.uniform(0.0, 0.6)
+            wait = min(20.0, base + jitter)
+            print(f"Request error (attempt {attempt}/{MAX_RETRIES}): {e}. Backing off {wait:.1f}s...")
+            time.sleep(wait)
+
+    raise RuntimeError(f"Failed after {MAX_RETRIES} retries. Last error: {last_err}")
+
 
 def ocm_query_circle(lat: float, lon: float, distance_km: float) -> List[Dict[str, Any]]:
     """
     Query OCM using a circle search around (lat, lon).
-    We deliberately set maxresults=500 and then detect truncation.
+    We set maxresults=500 and then detect truncation to split.
     """
     url = "https://api.openchargemap.io/v3/poi/"
-    headers = {}
-    if API_KEY:
-        headers["X-API-Key"] = API_KEY
+    headers = {"X-API-Key": OCM_API_KEY}
 
     params = {
         "output": "json",
@@ -96,23 +158,20 @@ def ocm_query_circle(lat: float, lon: float, distance_km: float) -> List[Dict[st
         "verbose": "true",
     }
 
-    r = requests.get(url, params=params, headers=headers, timeout=60)
-    r.raise_for_status()
-    data = r.json()
-    if not isinstance(data, list):
-        return []
+    data = request_with_retries(url, params, headers)
+    time.sleep(PAUSE_S)
     return data
+
 
 def query_bbox_adaptive(b: Dict[str, float], seen: Set[int]) -> List[Dict[str, Any]]:
     """
-    Recursively query a bbox by converting it to a circle query.
-    If we hit 500 results, split into 4 and retry.
-    Dedup by OCM ID using `seen`.
+    Recursively query a bbox by converting it to a circle query that covers the bbox.
+    If the request returns 500 items, split into 4 and retry for each child.
+    Dedup by OCM ID via `seen`.
     """
     lat_span, lon_span = bbox_spans(b)
     c_lat, c_lon = bbox_center(b)
 
-    # radius: max distance from center to bbox corner (covers bbox)
     corners = [
         (b["south"], b["west"]),
         (b["south"], b["east"]),
@@ -122,16 +181,15 @@ def query_bbox_adaptive(b: Dict[str, float], seen: Set[int]) -> List[Dict[str, A
     radius = max(haversine_km(c_lat, c_lon, clat, clon) for clat, clon in corners)
 
     data = ocm_query_circle(c_lat, c_lon, radius)
-    time.sleep(PAUSE_S)
 
-    # If it looks truncated (maxed), split unless tile is already tiny
+    # If truncated, split (unless too small)
     if len(data) >= MAXRESULTS and lat_span > MIN_LAT_SPAN and lon_span > MIN_LON_SPAN:
         out: List[Dict[str, Any]] = []
         for child in split_bbox_4(b):
             out.extend(query_bbox_adaptive(child, seen))
         return out
 
-    # Otherwise accept this tile and dedupe
+    # Otherwise accept tile; dedupe
     out: List[Dict[str, Any]] = []
     for item in data:
         try:
@@ -143,6 +201,7 @@ def query_bbox_adaptive(b: Dict[str, float], seen: Set[int]) -> List[Dict[str, A
         seen.add(oid)
         out.append(item)
     return out
+
 
 # =========================
 # FLATTEN TO YOUR CSV SHAPE
@@ -159,13 +218,12 @@ def safe_get(d: Any, *path, default=""):
             return default
     return cur if cur is not None else default
 
+
 def norm_str(x) -> str:
-    if x is None:
-        return ""
-    return str(x).strip()
+    return "" if x is None else str(x).strip()
+
 
 def compute_max_kw(item: Dict[str, Any]) -> str:
-    # Try to infer max kW from connections
     conns = item.get("Connections") or []
     best = None
     for c in conns:
@@ -178,28 +236,28 @@ def compute_max_kw(item: Dict[str, Any]) -> str:
             best = kw if best is None else max(best, kw)
     return "" if best is None else str(best)
 
+
 def compute_levels_and_dc(item: Dict[str, Any]) -> Tuple[str, int]:
     conns = item.get("Connections") or []
     levels = set()
     has_dc = 0
     for c in conns:
-        lvl = safe_get(c, "Level", "Title", default="")
-        t = norm_str(lvl).lower()
-        if t:
-            levels.add(norm_str(lvl))
-        # DC heuristic: look for Level 3 in title OR CurrentType contains DC
+        lvl = norm_str(safe_get(c, "Level", "Title", default=""))
+        if lvl:
+            levels.add(lvl)
+
+        t = lvl.lower()
         current = norm_str(safe_get(c, "CurrentType", "Title", default="")).lower()
         if "level 3" in t or "dc" in current:
             has_dc = 1
+
     return (", ".join(sorted(levels)), has_dc)
+
 
 def compute_plugs(item: Dict[str, Any]) -> str:
     conns = item.get("Connections") or []
-    plugs = []
-    for c in conns:
-        plugs.append(norm_str(safe_get(c, "ConnectionType", "Title", default="")))
+    plugs = [norm_str(safe_get(c, "ConnectionType", "Title", default="")) for c in conns]
     plugs = [p for p in plugs if p]
-    # de-dupe while preserving order-ish
     seen = set()
     out = []
     for p in plugs:
@@ -209,11 +267,10 @@ def compute_plugs(item: Dict[str, Any]) -> str:
         out.append(p)
     return ", ".join(out)
 
+
 def compute_current_types(item: Dict[str, Any]) -> str:
     conns = item.get("Connections") or []
-    types = []
-    for c in conns:
-        types.append(norm_str(safe_get(c, "CurrentType", "Title", default="")))
+    types = [norm_str(safe_get(c, "CurrentType", "Title", default="")) for c in conns]
     types = [t for t in types if t]
     seen = set()
     out = []
@@ -224,14 +281,14 @@ def compute_current_types(item: Dict[str, Any]) -> str:
         out.append(t)
     return ", ".join(out)
 
+
 def compute_num_points(item: Dict[str, Any]) -> str:
-    # OCM has NumberOfPoints at station-level often
     n = item.get("NumberOfPoints")
     if n is None:
-        # fallback: count connections
         conns = item.get("Connections") or []
         n = len(conns) if conns else ""
     return "" if n == "" else str(n)
+
 
 def flatten_item(item: Dict[str, Any]) -> Dict[str, Any]:
     addr = item.get("AddressInfo") or {}
@@ -263,21 +320,24 @@ def flatten_item(item: Dict[str, Any]) -> Dict[str, Any]:
         "has_dc_fast": has_dc,
     }
 
+
 # =========================
 # MAIN
 # =========================
 
 def main():
-    seen: Set[int] = set()
+    print("OCM key detected:", True)  # don't print the key
     print("Querying NYC via adaptive tiles (splitting on 500-cap)...")
+
+    seen: Set[int] = set()
     items = query_bbox_adaptive(NYC_BBOX, seen)
+
     print(f"Unique stations collected: {len(items)}")
 
-    rows = []
+    rows: List[Dict[str, Any]] = []
     dropped = 0
     for it in items:
         row = flatten_item(it)
-        # Validate lat/lon are numeric
         try:
             row["lat"] = float(row["lat"])
             row["lon"] = float(row["lon"])
@@ -288,7 +348,6 @@ def main():
 
     print(f"Rows written: {len(rows)} (dropped {dropped} missing lat/lon)")
 
-    # Columns your Leaflet code uses (and some extras)
     fieldnames = [
         "ocm_id", "lat", "lon", "name", "operator",
         "address", "town", "state", "postcode",
@@ -305,6 +364,7 @@ def main():
             w.writerow(r)
 
     print(f"Done: {OUT_CSV}")
+
 
 if __name__ == "__main__":
     main()
