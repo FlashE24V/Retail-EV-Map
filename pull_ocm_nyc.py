@@ -1,79 +1,13 @@
 #!/usr/bin/env python3
-"""
-Open Charge Map -> NYS (or NYC) export with Operator include/exclude filtering.
-
-- Pulls POIs from OpenChargeMap /v3/poi
-- Supports:
-  * NYC single bbox OR NYS tiling (recommended for full state)
-  * INCLUDE_OPERATORS: keep only matching operators (optional)
-  * EXCLUDE_OPERATORS: drop matching operators (optional)
-  * Writes a Leaflet/PapaParse-friendly CSV with an `operator` column
-
-GitHub Actions:
-- Store your API key in repo secrets as: OCM_API_KEY
-- The workflow should set env: OCM_API_KEY: ${{ secrets.OCM_API_KEY }}
-
-Output:
-- ocm_export.csv
-"""
-
 import os
 import re
 import time
-from typing import Dict, List, Any, Tuple
-
 import requests
 import pandas as pd
 
-
-# =========================
-# CONFIG
-# =========================
-
-MODE = "NYS"  # "NYC" or "NYS"
-
-# NYC bbox (5 boroughs)
-NYC_BBOX = (40.9176, -74.2591, 40.4774, -73.7004)  # (nw_lat, nw_lon, se_lat, se_lon)
-
-# Approx New York State bbox (covers Long Island + upstate; slight spillover is normal)
-NYS_BBOX = (45.0159, -79.7624, 40.4961, -71.8562)  # (nw_lat, nw_lon, se_lat, se_lon)
-
-# NYS tiling (increase tiles if you hit caps; smaller tiles = fewer results per request)
-TILES_X = 8
-TILES_Y = 8
-
-MAXRESULTS_PER_REQUEST = 500
-SLEEP_BETWEEN_CALLS_SEC = 0.25
-REQUEST_TIMEOUT_SEC = 60
-
-OUTPUT_CSV = "ocm_export.csv"
-
-# Operator filters (case-insensitive substring match).
-# If INCLUDE_OPERATORS is non-empty: ONLY operators matching one of these are kept.
-INCLUDE_OPERATORS: List[str] = [
-    # Examples:
-    # "EVgo",
-    # "Electrify America",
-    # "Tesla",
-]
-
-# Always exclude these operators if they match.
-EXCLUDE_OPERATORS: List[str] = [
-    # Examples:
-    # "ChargePoint",
-    # "Blink",
-]
-
-DROP_UNKNOWN_OPERATOR = False  # True to drop rows with blank/missing operator name
-
-
-# =========================
-# INTERNALS
-# =========================
-
 API_KEY = os.getenv("OCM_API_KEY")
 if not API_KEY:
-    raise SystemExit("Missing OCM_API_KEY environment variable (set GitHub Secret OCM_API_KEY).")
+    raise SystemExit("Missing OCM_API_KEY env var (set GitHub Secret OCM_API_KEY).")
 
 BASE_URL = "https://api.openchargemap.io/v3/poi/"
 HEADERS = {
@@ -81,138 +15,134 @@ HEADERS = {
     "User-Agent": "NY-Retail-Map/1.0 (contact: you@yourorg.com)",
 }
 
+# ---- New York State bounding box (approx; includes small spillover) ----
+# Top-left (NW):  45.0159, -79.7624
+# Bottom-right(SE):40.4961, -71.8562
+NYS_NW_LAT, NYS_NW_LON = 45.0159, -79.7624
+NYS_SE_LAT, NYS_SE_LON = 40.4961, -71.8562
+
+# ---- Tiling controls (increase tiles for more coverage) ----
+TILES_X = 10
+TILES_Y = 10
+
+# IMPORTANT: this is the per-request cap you set.
+# If a tile returns exactly this many, that tile likely has more results -> increase tiling.
+MAXRESULTS = 500
+
+SLEEP_SEC = 0.25
+OUT_CSV = "ocm_nys.csv"
+
+# ---- Operator filtering (optional) ----
+# If INCLUDE_OPERATORS is non-empty: keep ONLY those matching.
+INCLUDE_OPERATORS = [
+    # "EVgo",
+    # "Electrify America",
+    # "Tesla",
+]
+
+# Always drop these if they match.
+EXCLUDE_OPERATORS = [
+    # "ChargePoint",
+    # "Blink",
+]
+
+DROP_UNKNOWN_OPERATOR = False
+
 
 def norm(s: str) -> str:
     return re.sub(r"\s+", " ", (s or "").strip()).lower()
 
 
-INCLUDE_N = [norm(x) for x in INCLUDE_OPERATORS if norm(x)]
-EXCLUDE_N = [norm(x) for x in EXCLUDE_OPERATORS if norm(x)]
+include_n = [norm(x) for x in INCLUDE_OPERATORS if norm(x)]
+exclude_n = [norm(x) for x in EXCLUDE_OPERATORS if norm(x)]
 
 
 def bbox_param(nw_lat: float, nw_lon: float, se_lat: float, se_lon: float) -> str:
-    # OCM expects: (lat,lng),(lat2,lng2) = (top-left),(bottom-right)
+    # OCM bounding box format: (lat,lng),(lat2,lng2) (top-left, bottom-right)
     return f"({nw_lat:.6f},{nw_lon:.6f}),({se_lat:.6f},{se_lon:.6f})"
 
 
-def fetch_pois_for_bbox(nw_lat: float, nw_lon: float, se_lat: float, se_lon: float) -> List[Dict[str, Any]]:
+def fetch_tile(nw_lat: float, nw_lon: float, se_lat: float, se_lon: float):
     params = {
         "output": "json",
         "countrycode": "US",
         "boundingbox": bbox_param(nw_lat, nw_lon, se_lat, se_lon),
-        "maxresults": MAXRESULTS_PER_REQUEST,
-        "compact": True,
-        "verbose": False,
+        "maxresults": MAXRESULTS,
+
+        # KEY FIXES:
+        "compact": False,  # <-- ensures OperatorInfo and other objects can be populated
+        "verbose": True,   # <-- include expanded objects (default true)
     }
-    r = requests.get(BASE_URL, params=params, headers=HEADERS, timeout=REQUEST_TIMEOUT_SEC)
+    r = requests.get(BASE_URL, params=params, headers=HEADERS, timeout=90)
     r.raise_for_status()
     return r.json()
 
 
-def passes_operator_filters(op_title: str) -> bool:
+def passes_operator(op_title: str) -> bool:
     opn = norm(op_title)
     if DROP_UNKNOWN_OPERATOR and not opn:
         return False
-    if EXCLUDE_N and any(x in opn for x in EXCLUDE_N):
+    if exclude_n and any(x in opn for x in exclude_n):
         return False
-    if INCLUDE_N and not any(x in opn for x in INCLUDE_N):
+    if include_n and not any(x in opn for x in include_n):
         return False
     return True
 
 
-def poi_to_row(p: Dict[str, Any]) -> Dict[str, Any]:
-    addr = p.get("AddressInfo") or {}
-    op_title = (p.get("OperatorInfo") or {}).get("Title") or ""
-    usage = (p.get("UsageType") or {}).get("Title") or ""
-    status = (p.get("StatusType") or {}).get("Title") or ""
+lat_span = NYS_NW_LAT - NYS_SE_LAT
+lon_span = NYS_SE_LON - NYS_NW_LON
 
-    return {
-        "ocm_id": p.get("ID"),
-        "name": addr.get("Title"),
-        "operator": op_title,
-        "usage_type": usage,
-        "status_type": status,
-        "num_points": p.get("NumberOfPoints"),
-        "lat": addr.get("Latitude"),
-        "lon": addr.get("Longitude"),
-        "address": addr.get("AddressLine1"),
-        "town": addr.get("Town"),
-        "state": addr.get("StateOrProvince"),
-        "postcode": addr.get("Postcode"),
-    }
+rows = []
+seen_ids = set()
+truncation_warnings = 0
 
+for y in range(TILES_Y):
+    for x in range(TILES_X):
+        tile_nw_lat = NYS_NW_LAT - (lat_span * y / TILES_Y)
+        tile_se_lat = NYS_NW_LAT - (lat_span * (y + 1) / TILES_Y)
+        tile_nw_lon = NYS_NW_LON + (lon_span * x / TILES_X)
+        tile_se_lon = NYS_NW_LON + (lon_span * (x + 1) / TILES_X)
 
-def export_nyc() -> pd.DataFrame:
-    nw_lat, nw_lon, se_lat, se_lon = NYC_BBOX
-    pois = fetch_pois_for_bbox(nw_lat, nw_lon, se_lat, se_lon)
+        pois = fetch_tile(tile_nw_lat, tile_nw_lon, tile_se_lat, tile_se_lon)
 
-    rows = []
-    for p in pois:
-        op = (p.get("OperatorInfo") or {}).get("Title") or ""
-        if not passes_operator_filters(op):
-            continue
-        rows.append(poi_to_row(p))
+        if len(pois) >= MAXRESULTS:
+            truncation_warnings += 1
 
-    df = pd.DataFrame(rows)
-    return df
+        for p in pois:
+            pid = p.get("ID")
+            if not pid or pid in seen_ids:
+                continue
 
+            addr = p.get("AddressInfo") or {}
+            op_title = (p.get("OperatorInfo") or {}).get("Title") or ""
 
-def export_nys_tiled() -> pd.DataFrame:
-    nw_lat, nw_lon, se_lat, se_lon = NYS_BBOX
+            if not passes_operator(op_title):
+                continue
 
-    lat_span = nw_lat - se_lat
-    lon_span = se_lon - nw_lon
+            seen_ids.add(pid)
+            rows.append({
+                "ocm_id": pid,
+                "name": addr.get("Title"),
+                "operator": op_title,  # <-- charging company/operator name
+                "usage_type": (p.get("UsageType") or {}).get("Title"),
+                "status_type": (p.get("StatusType") or {}).get("Title"),
+                "num_points": p.get("NumberOfPoints"),
+                "lat": addr.get("Latitude"),
+                "lon": addr.get("Longitude"),
+                "address": addr.get("AddressLine1"),
+                "town": addr.get("Town"),
+                "state": addr.get("StateOrProvince"),
+                "postcode": addr.get("Postcode"),
+            })
 
-    seen_ids = set()
-    rows = []
+        print(f"Tile ({x+1}/{TILES_X},{y+1}/{TILES_Y}) -> {len(pois)} POIs | unique kept: {len(seen_ids)}")
+        time.sleep(SLEEP_SEC)
 
-    for y in range(TILES_Y):
-        for x in range(TILES_X):
-            tile_nw_lat = nw_lat - (lat_span * y / TILES_Y)
-            tile_se_lat = nw_lat - (lat_span * (y + 1) / TILES_Y)
+df = pd.DataFrame(rows).dropna(subset=["lat", "lon"]).drop_duplicates(subset=["ocm_id"])
+df.to_csv(OUT_CSV, index=False)
 
-            tile_nw_lon = nw_lon + (lon_span * x / TILES_X)
-            tile_se_lon = nw_lon + (lon_span * (x + 1) / TILES_X)
+print(f"Saved {len(df)} NYS locations -> {OUT_CSV}")
 
-            pois = fetch_pois_for_bbox(tile_nw_lat, tile_nw_lon, tile_se_lat, tile_se_lon)
-
-            for p in pois:
-                pid = p.get("ID")
-                if not pid or pid in seen_ids:
-                    continue
-
-                op = (p.get("OperatorInfo") or {}).get("Title") or ""
-                if not passes_operator_filters(op):
-                    continue
-
-                seen_ids.add(pid)
-                rows.append(poi_to_row(p))
-
-            print(
-                f"Tile ({x+1}/{TILES_X},{y+1}/{TILES_Y}) -> "
-                f"{len(pois)} records; total unique kept: {len(seen_ids)}"
-            )
-            time.sleep(SLEEP_BETWEEN_CALLS_SEC)
-
-    df = pd.DataFrame(rows)
-    return df
-
-
-def main():
-    if MODE.upper() == "NYC":
-        df = export_nyc()
-    elif MODE.upper() == "NYS":
-        df = export_nys_tiled()
-    else:
-        raise SystemExit('MODE must be "NYC" or "NYS"')
-
-    # Clean
-    if not df.empty:
-        df = df.dropna(subset=["lat", "lon"]).drop_duplicates(subset=["ocm_id"])
-
-    df.to_csv(OUTPUT_CSV, index=False)
-    print(f"Saved {len(df)} rows -> {OUTPUT_CSV}")
-
-
-if __name__ == "__main__":
-    main()
+if truncation_warnings:
+    print(f"WARNING: {truncation_warnings} tiles returned >= MAXRESULTS ({MAXRESULTS}).")
+    print("Those tiles are likely truncated. Increase TILES_X/TILES_Y (smaller tiles) to capture all locations.")
