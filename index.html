@@ -124,8 +124,27 @@
     // ======================
     var OCM_CSV_URL = 'ocm_nyc_retail_locations.csv?v=' + Date.now();
 
+    // ---- HARD NY STATE LIMITS (lat/lon bbox) ----
+    // Approx NYS extents (covers whole state without Canada/PA/CT spill):
+    // South ~40.49  North ~45.02  West ~-79.76  East ~-71.85
+    var NY_BBOX = {
+      south: 40.49,
+      north: 45.02,
+      west: -79.76,
+      east: -71.85
+    };
+
+    // Lock map to NY bounds (keeps panning reasonable + avoids zooming out to other places)
+    var nyBounds = L.latLngBounds(
+      [NY_BBOX.south, NY_BBOX.west],
+      [NY_BBOX.north, NY_BBOX.east]
+    );
+
     // Default view (will fitBounds after load)
-    var map = L.map('map').setView([40.7128, -74.0060], 10);
+    var map = L.map('map', {
+      maxBounds: nyBounds,
+      maxBoundsViscosity: 0.85
+    }).setView([42.9, -75.0], 6);
 
     L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
       attribution: '&copy; OpenStreetMap contributors'
@@ -155,6 +174,13 @@
 
     function normOperator(op) {
       return cleanStr(op).replace(/\s+/g, ' ');
+    }
+
+    function isInNY(lat, lon) {
+      return (
+        lat >= NY_BBOX.south && lat <= NY_BBOX.north &&
+        lon >= NY_BBOX.west  && lon <= NY_BBOX.east
+      );
     }
 
     function isDcFast(row) {
@@ -345,6 +371,9 @@
         var lat = row.lat, lon = row.lon;
         if (typeof lat !== 'number' || typeof lon !== 'number' || isNaN(lat) || isNaN(lon)) return;
 
+        // ✅ HARD NY STATE FILTER (ignore anything outside NY)
+        if (!isInNY(lat, lon)) return;
+
         if (!passesOperator(row)) return;
         if (!passesLevel(row)) return;
 
@@ -363,10 +392,13 @@
         any = true;
       });
 
-      // Fit to visible markers
+      // Fit to visible markers (NY-only)
       if (any) {
         var b = clusterGroup.getBounds();
         if (b && b.isValid()) map.fitBounds(b.pad(0.12));
+      } else {
+        // If filters remove everything, fall back to NY view
+        map.fitBounds(nyBounds.pad(0.05));
       }
     }
 
@@ -378,14 +410,20 @@
       header: true,
       dynamicTyping: true,
       complete: function(res) {
-        // Keep all valid geo rows (no paid-parking restriction anymore)
+
+        // Keep all valid geo rows (we'll NY-filter during render)
         allRows = (res && res.data ? res.data : []).filter(function(r){
           return r && typeof r.lat === 'number' && typeof r.lon === 'number' && !isNaN(r.lat) && !isNaN(r.lon);
         });
 
-        // Build operator list (but remove "Blink Charging Europe" from dropdown)
+        // Build operator list based on NY-only rows (so dropdown doesn't include out-of-state ops)
         var opsSet = {};
         allRows.forEach(function(r){
+          var lat = r.lat, lon = r.lon;
+          if (typeof lat !== 'number' || typeof lon !== 'number' || isNaN(lat) || isNaN(lon)) return;
+
+          if (!isInNY(lat, lon)) return;
+
           var op = normOperator(r.operator);
           if (!op) return;
 
@@ -403,6 +441,9 @@
         // Reset filters to avoid “stuck” state
         operatorFilter = 'ALL';
         levelFilter = 'ALL';
+
+        // Start with NY view even before fitBounds
+        map.fitBounds(nyBounds.pad(0.05));
 
         render();
       },
