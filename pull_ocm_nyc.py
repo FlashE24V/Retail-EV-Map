@@ -1,20 +1,20 @@
 #!/usr/bin/env python3
 """
 Open Charge Map (OCM) -> NEW YORK STATE export (includes NYC) with:
-- Tiling (avoids the 500-result cap)
-- Filters OUT NJ/CT/etc by keeping only StateOrProvince that looks like NY
+- Tiling (avoids 500-result cap)
+- Filters OUT NJ/CT/etc by keeping only NY StateOrProvince values
 - Includes operator (charging company)
 - Includes plug types + max kW summary
-- Cleans dataset:
-    * removes blank operator
-    * removes Tesla operator
-    * removes Private usage types (includes "Private - Restricted Access")
+- Removes "Private" usage types
+- Keeps ONLY these operators (whitelist):
+    AmpUp, Blink, ChargePoint, EV Connect, EV Gateway, EVgo, FLO,
+    Ionna, Noodoe, PowerFlex, Revel, ViaLynk
 
 GitHub Actions:
 - Repo Secret: OCM_API_KEY
 - Workflow runs: python pull_ocm_nyc.py
 
-Output:
+Output (matches what your workflow/map already uses):
 - ocm_nyc_retail_locations.csv
 """
 
@@ -57,6 +57,22 @@ HEADERS = {
     "User-Agent": CLIENT_NAME,
 }
 
+# Only keep these operators (case-insensitive substring match)
+ALLOWED_OPERATORS = [
+    "ampup",
+    "blink",
+    "chargepoint",
+    "ev connect",
+    "ev gateway",
+    "evgo",
+    "flo",
+    "ionna",
+    "noodoe",
+    "powerflex",
+    "revel",
+    "vialynk",
+]
+
 
 # =========================
 # HELPERS
@@ -75,7 +91,6 @@ def fetch_tile(nw_lat: float, nw_lon: float, se_lat: float, se_lon: float):
         "output": "json",
 
         # IMPORTANT: keep reference objects like OperatorInfo / ConnectionType / CurrentType
-        # If compact=True you often won't see operator names.
         "compact": False,
         "verbose": True,
 
@@ -181,6 +196,13 @@ def poi_to_row(p: dict):
     }
 
 
+def operator_allowed(op: str) -> bool:
+    op = (op or "").strip().lower()
+    if not op:
+        return False
+    return any(token in op for token in ALLOWED_OPERATORS)
+
+
 # =========================
 # MAIN
 # =========================
@@ -234,30 +256,25 @@ def main():
 
     df = pd.DataFrame(rows)
 
-    # Basic cleanup
     if not df.empty:
         df = df.dropna(subset=["lat", "lon"]).drop_duplicates(subset=["ocm_id"])
 
-        # -----------------------------
-        # CLEANING FILTERS (your asks)
-        # -----------------------------
+        # Normalize strings
         df["operator"] = df["operator"].fillna("").astype(str).str.strip()
         df["usage_type"] = df["usage_type"].fillna("").astype(str).str.strip()
 
-        # 1) remove blank operator
-        df = df[df["operator"] != ""]
-
-        # 2) remove Tesla operator
-        df = df[~df["operator"].str.lower().str.contains("tesla", na=False)]
-
-        # 3) remove Private + Private - Restricted Access (and any other private variants)
+        # Remove private usage (includes "Private - Restricted Access" and other private variants)
         df = df[~df["usage_type"].str.lower().str.contains("private", na=False)]
 
-    # DEBUG: show what states remain (should be NY only)
-    if not df.empty and "state" in df.columns:
-        s = df["state"].fillna("").astype(str).str.strip()
-        print("\nTop states in OUTPUT (should be NY variants only):")
-        print(s.value_counts().head(20).to_string())
+        # Keep ONLY whitelisted operators, and drop blanks automatically
+        df = df[df["operator"].apply(operator_allowed)]
+
+        # Optional debug prints (kept short)
+        print("\nTop operators after filtering:")
+        print(df["operator"].value_counts().head(20).to_string())
+
+        print("\nTop usage types after filtering:")
+        print(df["usage_type"].value_counts().head(10).to_string())
 
     df.to_csv(OUTPUT_CSV, index=False)
     print(f"\nSaved {len(df)} NY retail locations -> {OUTPUT_CSV}")
