@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """
-pull_ocm_nyc.py — OpenChargeMap NYC export with adaptive tiling (no 500-cap truncation)
+pull_ocm_ny.py — OpenChargeMap export with adaptive tiling (no 500-cap truncation)
 
 ✅ Reads API key from env var: OCM_API_KEY (GitHub Secrets)
 ✅ Sends key to OCM via header: X-API-Key
 ✅ Adaptive tiling: recursively splits tiles that hit the 500 result cap
 ✅ CRITICAL: split decision uses RAW response length (before filters)
-✅ Keeps ALL of NYC (5 boroughs) via NYC bbox
+✅ Coverage: ALL OF NEW YORK STATE (so you do NOT lose NYS chargers)
 ✅ Filters:
    - Remove New Jersey only
    - Remove Tesla operator
@@ -40,19 +40,21 @@ if not OCM_API_KEY:
 
 OUT_CSV = "ocm_nyc_retail_locations.csv"
 
-# ALL NYC (5 boroughs)
-NYC_BBOX = {
-    "south": 40.4774,
-    "north": 40.9176,
-    "west": -74.2591,
-    "east": -73.7004,
+# ✅ ALL NEW YORK STATE bounding box (keeps everything you had before)
+# Approx NYS extents:
+# South ~40.49  North ~45.02  West ~-79.76  East ~-71.85
+NY_STATE_BBOX = {
+    "south": 40.49,
+    "north": 45.02,
+    "west": -79.76,
+    "east": -71.85,
 }
 
 MAXRESULTS = 500
 
-# stop splitting when already small (dense Manhattan will keep splitting until safe)
-MIN_LAT_SPAN = 0.008
-MIN_LON_SPAN = 0.008
+# Stop splitting when already small
+MIN_LAT_SPAN = 0.02
+MIN_LON_SPAN = 0.02
 
 PAUSE_S = 0.6
 MAX_RETRIES = 6
@@ -80,7 +82,7 @@ def norm_str(x) -> str:
 
 
 # =========================
-# FILTERS
+# FILTERS (ONLY what you asked)
 # =========================
 
 APPROVED_OPERATORS = {
@@ -110,9 +112,6 @@ def operator_allowed(item: Dict[str, Any]) -> bool:
     op = normalize_operator_name(norm_str(safe_get(item, "OperatorInfo", "Title", default="")))
     if not op:
         return False
-
-    # match substrings to handle variations like:
-    # "ChargePoint, Inc.", "EVgo Network", etc.
     for allowed in APPROVED_OPERATORS:
         if allowed in op:
             return True
@@ -121,9 +120,7 @@ def operator_allowed(item: Dict[str, Any]) -> bool:
 
 def is_public_access(item: Dict[str, Any]) -> bool:
     usage = norm_str(safe_get(item, "UsageType", "Title", default="")).lower()
-    if not usage:
-        return False
-    return "public" in usage
+    return bool(usage) and ("public" in usage)
 
 
 def is_new_jersey(item: Dict[str, Any]) -> bool:
@@ -244,8 +241,8 @@ def ocm_query_circle(lat: float, lon: float, distance_km: float) -> List[Dict[st
 def query_bbox_adaptive(b: Dict[str, float], seen: Set[int]) -> List[Dict[str, Any]]:
     """
     CRITICAL:
-    - Use RAW response length to decide whether we hit truncation (>= 500).
-    - Only then apply filters and accept results.
+    - Decide split based on RAW response length (cap happens before filters).
+    - Then apply only the requested filters.
     """
     lat_span, lon_span = bbox_spans(b)
     c_lat, c_lon = bbox_center(b)
@@ -261,21 +258,22 @@ def query_bbox_adaptive(b: Dict[str, float], seen: Set[int]) -> List[Dict[str, A
     raw = ocm_query_circle(c_lat, c_lon, radius)
     raw_len = len(raw)
 
-    # ✅ If OCM returned the cap, we must split (even if filtering reduces the count)
+    # Split if we hit the cap (before filtering)
     if raw_len >= MAXRESULTS and lat_span > MIN_LAT_SPAN and lon_span > MIN_LON_SPAN:
         out: List[Dict[str, Any]] = []
         for child in split_bbox_4(b):
             out.extend(query_bbox_adaptive(child, seen))
         return out
 
-    # Now filter (NYC bbox + NJ removal + Tesla removal + operator allowlist + public-only)
+    # Keep only points truly in this bbox (prevents circle bleed far away)
     data = [it for it in raw if item_in_bbox(it, b)]
+
+    # Apply ONLY the filters you asked for:
     data = [it for it in data if not is_new_jersey(it)]
     data = [it for it in data if not is_tesla_operator(it)]
     data = [it for it in data if operator_allowed(it)]
     data = [it for it in data if is_public_access(it)]
 
-    # Dedup by OCM ID
     out: List[Dict[str, Any]] = []
     for item in data:
         try:
@@ -286,7 +284,6 @@ def query_bbox_adaptive(b: Dict[str, float], seen: Set[int]) -> List[Dict[str, A
             continue
         seen.add(oid)
         out.append(item)
-
     return out
 
 
@@ -316,12 +313,10 @@ def compute_levels_and_dc(item: Dict[str, Any]) -> Tuple[str, int]:
         lvl = norm_str(safe_get(c, "Level", "Title", default=""))
         if lvl:
             levels.add(lvl)
-
         t = lvl.lower()
         current = norm_str(safe_get(c, "CurrentType", "Title", default="")).lower()
         if "level 3" in t or "dc" in current:
             has_dc = 1
-
     return (", ".join(sorted(levels)), has_dc)
 
 
@@ -393,12 +388,12 @@ def flatten_item(item: Dict[str, Any]) -> Dict[str, Any]:
 
 def main():
     print("OCM key detected:", True)
-    print("Querying ALL NYC via adaptive tiles (splitting correctly on 500-cap)...")
+    print("Querying ALL NYS via adaptive tiles (splitting correctly on 500-cap)...")
 
     seen: Set[int] = set()
-    items = query_bbox_adaptive(NYC_BBOX, seen)
+    items = query_bbox_adaptive(NY_STATE_BBOX, seen)
 
-    print(f"Unique NYC stations collected (filtered): {len(items)}")
+    print(f"Unique NY stations collected (filtered): {len(items)}")
 
     rows: List[Dict[str, Any]] = []
     dropped = 0
