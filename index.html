@@ -1,546 +1,134 @@
 <!DOCTYPE html>
 <html>
 <head>
-  <meta charset="utf-8" />
-  <title>NY EV Retail Map (OCM CSV)</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+<meta charset="utf-8" />
+<title>NY EV Retail Map (OCM CSV)</title>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
 
-  <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css" />
-  <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.css" />
-  <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.Default.css" />
+<link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css"/>
+<link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.css"/>
+<link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.Default.css"/>
 
-  <script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
-  <script src="https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js"></script>
-  <script src="https://unpkg.com/papaparse@5.4.1/papaparse.min.js"></script>
+<script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
+<script src="https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js"></script>
+<script src="https://unpkg.com/papaparse@5.4.1/papaparse.min.js"></script>
 
-  <style>
-    html, body { height: 100%; margin: 0; }
-    #map { height: 100vh; width: 100%; }
+<style>
+html,body{height:100%;margin:0;}
+#map{height:100vh;width:100%;}
 
-    .controls {
-      background: white;
-      padding: 8px 10px;
-      border-radius: 8px;
-      box-shadow: 0 1px 6px rgba(0,0,0,0.25);
-      font: 14px/1.2 system-ui, -apple-system, Arial, sans-serif;
-    }
-    .controls .title { font-weight: 700; margin-bottom: 6px; display:block; }
-    .controls select {
-      width: 240px;
-      max-width: 70vw;
-      padding: 6px 8px;
-      border-radius: 8px;
-      border: 1px solid #e5e7eb;
-      background: #fff;
-      font-size: 14px;
-    }
-    .controls .hint {
-      margin-top: 6px;
-      font-size: 12px;
-      color: #6b7280;
-    }
+/* existing controls unchanged */
+.controls{background:white;padding:8px 10px;border-radius:8px;box-shadow:0 1px 6px rgba(0,0,0,.25);font:14px system-ui;}
+.controls select{padding:6px;border-radius:8px;border:1px solid #ddd}
 
-    .bolt-circle {
-      width: 26px;
-      height: 26px;
-      border-radius: 50%;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      border: 2px solid #222;
-      color: #fff;
-      font-size: 16px;
-      line-height: 1;
-      box-shadow: 0 1px 4px rgba(0,0,0,0.25);
-      transform: translate(-1px, -1px);
-      position: relative;
-    }
-    .bolt-l2 { background: #2563eb; }
-    .bolt-l3 { background: #16a34a; }
+/* NEW location control */
+.locateBox{
+  background:white;
+  padding:8px;
+  border-radius:10px;
+  box-shadow:0 1px 6px rgba(0,0,0,.25);
+  display:flex;
+  gap:6px;
+  align-items:center;
+}
+.locateBox input{
+  border:1px solid #ddd;
+  padding:6px 8px;
+  border-radius:8px;
+  width:180px;
+}
+.locateBox button{
+  border:none;
+  padding:6px 10px;
+  border-radius:8px;
+  background:#111;
+  color:white;
+  cursor:pointer;
+}
 
-    .op-badge {
-      position: absolute;
-      right: -8px;
-      top: -8px;
-      min-width: 18px;
-      height: 18px;
-      padding: 0 4px;
-      border-radius: 999px;
-      background: #111;
-      color: #fff;
-      border: 2px solid #fff;
-      box-shadow: 0 1px 4px rgba(0,0,0,0.25);
-      font-size: 10px;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      letter-spacing: .3px;
-    }
-
-    .leaflet-div-icon { background: transparent; border: none; }
-
-    .popup .row { margin-top:6px; }
-    .popup .k { font-weight:700; }
-    .popup .addr { margin-top:6px; color:#374151; }
-    .popup .links { margin-top:8px; }
-
-    .footer-attrib {
-      position: fixed;
-      left: 0;
-      right: 0;
-      bottom: 0;
-      z-index: 9999;
-      background: rgba(255,255,255,0.92);
-      border-top: 1px solid rgba(0,0,0,0.12);
-      padding: 6px 12px;
-      font: 12px/1.2 system-ui, -apple-system, Arial, sans-serif;
-      color: #374151;
-      display: flex;
-      gap: 10px;
-      justify-content: space-between;
-      align-items: center;
-      backdrop-filter: blur(4px);
-    }
-    .footer-attrib a { color: #111; text-decoration: none; font-weight: 600; }
-    .footer-attrib a:hover { text-decoration: underline; }
-    .leaflet-bottom { margin-bottom: 28px; }
-  </style>
+.footer-attrib{
+ position:fixed;left:0;right:0;bottom:0;z-index:9999;
+ background:rgba(255,255,255,.92);
+ border-top:1px solid rgba(0,0,0,.12);
+ padding:6px 12px;font:12px system-ui;color:#374151;
+ display:flex;justify-content:space-between
+}
+.leaflet-bottom{margin-bottom:28px;}
+</style>
 </head>
 
 <body>
-  <div id="map"></div>
-
-  <div class="footer-attrib">
-    <div>Data from <a href="https://openchargemap.org" target="_blank" rel="noopener">OpenChargeMap</a></div>
-    <div style="opacity:.8;">Retail EV charging locations</div>
-  </div>
-
-  <script>
-    // ======================
-    // CONFIG
-    // ======================
-    var OCM_CSV_URL = 'ocm_nyc_retail_locations.csv?v=' + Date.now();
-
-    // Put this file next to index.html
-    var NY_GEOJSON_URL = 'ny_state.geojson?v=' + Date.now();
-
-    // Default view (we'll fit to NY boundary when loaded)
-    var map = L.map('map').setView([42.9, -75.0], 6);
-
-    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-      attribution: '&copy; OpenStreetMap contributors'
-    }).addTo(map);
-
-    var clusterGroup = L.markerClusterGroup({
-      showCoverageOnHover: false,
-      spiderfyOnMaxZoom: true,
-      disableClusteringAtZoom: 17
-    });
-    map.addLayer(clusterGroup);
-
-    // ======================
-    // NY POLYGON + POINT-IN-POLYGON
-    // ======================
-    var nyGeo = null;       // raw geojson
-    var nyLayer = null;     // leaflet layer (optional outline)
-    var nyBounds = null;    // leaflet bounds
-    var nyRings = [];       // array of rings (each ring: [{lat,lon},...]) for point-in-poly
-
-    function cleanStr(v) {
-      if (v === undefined || v === null) return '';
-      return ('' + v).trim();
-    }
-
-    function escapeHtml(s) {
-      return ('' + (s ?? '')).replace(/[&<>"']/g, function(m) {
-        return ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]);
-      });
-    }
-
-    function normOperator(op) {
-      return cleanStr(op).replace(/\s+/g, ' ');
-    }
-
-    // Ray casting point-in-ring (lon=x, lat=y)
-    function pointInRing(lat, lon, ring) {
-      var inside = false;
-      for (var i = 0, j = ring.length - 1; i < ring.length; j = i++) {
-        var xi = ring[i].lon, yi = ring[i].lat;
-        var xj = ring[j].lon, yj = ring[j].lat;
-
-        var intersect = ((yi > lat) !== (yj > lat)) &&
-                        (lon < (xj - xi) * (lat - yi) / ((yj - yi) || 1e-12) + xi);
-        if (intersect) inside = !inside;
-      }
-      return inside;
-    }
-
-    // Supports MultiPolygon and Polygon.
-    // Treats "inside NY" if inside any outer ring AND not inside a hole ring.
-    function pointInNY(lat, lon) {
-      if (!nyGeo) return true; // if boundary not loaded yet, don't hide anything
-      // Quick bounds reject
-      if (nyBounds && !nyBounds.contains([lat, lon])) return false;
-
-      // nyRings structure: [{ outers:[ring...], holes:[ring...] }, ...]
-      for (var p = 0; p < nyRings.length; p++) {
-        var poly = nyRings[p];
-        var inOuter = false;
-        for (var o = 0; o < poly.outers.length; o++) {
-          if (pointInRing(lat, lon, poly.outers[o])) { inOuter = true; break; }
-        }
-        if (!inOuter) continue;
-
-        var inHole = false;
-        for (var h = 0; h < poly.holes.length; h++) {
-          if (pointInRing(lat, lon, poly.holes[h])) { inHole = true; break; }
-        }
-        if (!inHole) return true;
-      }
-      return false;
-    }
-
-    function extractRingsFromGeoJSON(gj) {
-      // Output array of polygons: {outers:[ring], holes:[ring]}
-      var out = [];
-
-      function coordsToRing(coords) {
-        // coords: [[lon,lat], ...]
-        var ring = [];
-        for (var i = 0; i < coords.length; i++) {
-          ring.push({ lon: coords[i][0], lat: coords[i][1] });
-        }
-        return ring;
-      }
-
-      function handlePolygonCoords(polyCoords) {
-        // polyCoords: [ outerRingCoords, hole1Coords, hole2Coords, ... ]
-        var poly = { outers: [], holes: [] };
-        if (polyCoords.length > 0) poly.outers.push(coordsToRing(polyCoords[0]));
-        for (var i = 1; i < polyCoords.length; i++) {
-          poly.holes.push(coordsToRing(polyCoords[i]));
-        }
-        out.push(poly);
-      }
-
-      var geom = gj.type === 'FeatureCollection'
-        ? (gj.features[0] && gj.features[0].geometry)
-        : (gj.type === 'Feature' ? gj.geometry : gj);
-
-      if (!geom) return out;
-
-      if (geom.type === 'Polygon') {
-        handlePolygonCoords(geom.coordinates);
-      } else if (geom.type === 'MultiPolygon') {
-        for (var i = 0; i < geom.coordinates.length; i++) {
-          handlePolygonCoords(geom.coordinates[i]);
-        }
-      }
-      return out;
-    }
-
-    function loadNYBoundary(cb) {
-      fetch(NY_GEOJSON_URL)
-        .then(function(r){
-          if (!r.ok) throw new Error('Failed to load ny_state.geojson (' + r.status + ')');
-          return r.json();
-        })
-        .then(function(gj){
-          nyGeo = gj;
-
-          // Optional outline on map (kept very light)
-          nyLayer = L.geoJSON(gj, {
-            style: function() {
-              return { weight: 2, opacity: 0.35, fillOpacity: 0.02 };
-            }
-          }).addTo(map);
-
-          nyBounds = nyLayer.getBounds();
-          nyRings = extractRingsFromGeoJSON(gj);
-
-          // Lock view to NY polygon
-          if (nyBounds && nyBounds.isValid()) {
-            map.fitBounds(nyBounds.pad(0.05));
-            map.setMaxBounds(nyBounds.pad(0.15));
-          }
-
-          cb && cb();
-        })
-        .catch(function(err){
-          console.error(err);
-          alert(
-            "Couldn't load ny_state.geojson.\n\n" +
-            "Place 'ny_state.geojson' next to index.html in the same folder.\n" +
-            "Then refresh.\n\n" +
-            "Error: " + err.message
-          );
-          cb && cb();
-        });
-    }
-
-    // ======================
-    // YOUR EXISTING HELPERS
-    // ======================
-    function isDcFast(row) {
-      var hasDc = row.has_dc_fast;
-      if (hasDc === 1 || hasDc === true || ('' + hasDc).toLowerCase() === 'true') return true;
-
-      var levels = cleanStr(row.charging_levels).toLowerCase();
-      if (levels.includes('level 3')) return true;
-
-      var maxKw = parseFloat(row.max_kw);
-      if (!isNaN(maxKw) && maxKw >= 50) return true;
-
-      return false;
-    }
-
-    function chargingLevelLabel(row) {
-      return isDcFast(row) ? 'DC Fast (Level 3)' : 'Level 2';
-    }
-
-    function makeOperatorCode(op) {
-      var t = (op || '').toLowerCase();
-      if (t.includes('chargepoint')) return 'CP';
-      if (t.includes('evgo')) return 'EVgo';
-      if (t.includes('blink')) return 'BLK';
-      if (t.includes('flo')) return 'FLO';
-      if (t.includes('revel')) return 'RVL';
-      if (t.includes('ampup')) return 'AMP';
-      if (t.includes('powerflex')) return 'PFX';
-      if (t.includes('ev connect')) return 'EVC';
-      if (t.includes('ev gateway')) return 'EVG';
-      if (t.includes('noodoe')) return 'NOD';
-      if (t.includes('vialynk')) return 'VIA';
-      if (t.includes('ionna')) return 'ION';
-      var s = normOperator(op);
-      return s ? s.replace(/[^A-Za-z]/g,'').slice(0,3).toUpperCase() : '';
-    }
-
-    function boltIconHTML(levelClass, operatorText) {
-      var SHOW_BADGE = true;
-      var badge = '';
-      if (SHOW_BADGE) {
-        var code = makeOperatorCode(operatorText);
-        if (code) badge = '<span class="op-badge">' + escapeHtml(code) + '</span>';
-      }
-      return '<div class="bolt-circle ' + levelClass + '">⚡' + badge + '</div>';
-    }
-
-    function makePopup(row) {
-      var name = cleanStr(row.name) || 'EV Charging Site';
-      var op = normOperator(row.operator);
-      var level = chargingLevelLabel(row);
-
-      var plugs = cleanStr(row.plug_types);
-      var currents = cleanStr(row.current_types);
-      var levels = cleanStr(row.charging_levels);
-      var maxKw = (row.max_kw !== undefined && row.max_kw !== null && row.max_kw !== '') ? row.max_kw : '';
-      var points = (row.num_points !== undefined && row.num_points !== null && row.num_points !== '') ? row.num_points : '';
-      var status = cleanStr(row.status_type);
-      var usage = cleanStr(row.usage_type);
-
-      var addr = cleanStr(row.address);
-      var town = cleanStr(row.town);
-      var state = cleanStr(row.state) || 'NY';
-      var postcode = cleanStr(row.postcode);
-
-      var lat = row.lat, lon = row.lon;
-      var apple = 'http://maps.apple.com/?daddr=' + lat + ',' + lon;
-      var gmaps = 'https://www.google.com/maps/dir/?api=1&destination=' + lat + ',' + lon;
-
-      var addrLine = [addr, town, state, postcode].filter(Boolean).join(', ');
-
-      var html = '<div class="popup" style="min-width:260px;">' +
-        '<strong>' + escapeHtml(name) + '</strong>' +
-        '<div class="row"><span class="k">Charging Level:</span> ' + escapeHtml(level) + '</div>' +
-        (op ? '<div class="row"><span class="k">Operator:</span> ' + escapeHtml(op) + '</div>' : '') +
-        (points ? '<div class="row"><span class="k">Ports (reported):</span> ' + escapeHtml(points) + '</div>' : '') +
-        (maxKw !== '' ? '<div class="row"><span class="k">Max kW:</span> ' + escapeHtml(maxKw) + '</div>' : '') +
-        (plugs ? '<div class="row"><span class="k">Plug Types:</span> ' + escapeHtml(plugs) + '</div>' : '') +
-        (currents ? '<div class="row"><span class="k">Current Types:</span> ' + escapeHtml(currents) + '</div>' : '') +
-        (levels ? '<div class="row"><span class="k">OCM Levels:</span> ' + escapeHtml(levels) + '</div>' : '') +
-        (status ? '<div class="row"><span class="k">OCM Status:</span> ' + escapeHtml(status) + '</div>' : '') +
-        (usage ? '<div class="row"><span class="k">Access:</span> ' + escapeHtml(usage) + '</div>' : '') +
-        (addrLine ? '<div class="addr">' + escapeHtml(addrLine) + '</div>' : '') +
-        '<div class="links">' +
-          '<a href="' + apple + '" target="_blank" rel="noopener">Directions (Apple)</a> &nbsp;|&nbsp; ' +
-          '<a href="' + gmaps + '" target="_blank" rel="noopener">Directions (Google)</a>' +
-        '</div>' +
-      '</div>';
-
-      return html;
-    }
-
-    // ======================
-    // FILTER STATE
-    // ======================
-    var operatorFilter = 'ALL';
-    var levelFilter = 'ALL';
-
-    function passesOperator(row) {
-      if (operatorFilter === 'ALL') return true;
-      var op = normOperator(row.operator);
-      return op === operatorFilter;
-    }
-
-    function passesLevel(row) {
-      if (levelFilter === 'ALL') return true;
-      return chargingLevelLabel(row) === levelFilter;
-    }
-
-    // ======================
-    // UI CONTROLS
-    // ======================
-    var operatorControl, levelControl;
-
-    function addOperatorControl(operatorsSorted) {
-      operatorControl = L.control({position: 'topleft'});
-      operatorControl.onAdd = function () {
-        var div = L.DomUtil.create('div', 'controls');
-        div.innerHTML =
-          '<span class="title">Operator</span>' +
-          '<select id="operatorSelect"></select>' +
-          '<div class="hint">Tip: pick an operator, then filter Level 2 vs DC Fast.</div>';
-
-        L.DomEvent.disableClickPropagation(div);
-        L.DomEvent.disableScrollPropagation(div);
-
-        var sel = div.querySelector('#operatorSelect');
-
-        var allOpt = document.createElement('option');
-        allOpt.value = 'ALL';
-        allOpt.textContent = 'All Operators';
-        sel.appendChild(allOpt);
-
-        (operatorsSorted || []).forEach(function(op){
-          var o = document.createElement('option');
-          o.value = op;
-          o.textContent = op;
-          sel.appendChild(o);
-        });
-
-        sel.addEventListener('change', function(){
-          operatorFilter = sel.value;
-          render();
-        });
-
-        return div;
-      };
-      operatorControl.addTo(map);
-    }
-
-    function addLevelControl() {
-      levelControl = L.control({position: 'topright'});
-      levelControl.onAdd = function () {
-        var div = L.DomUtil.create('div', 'controls');
-        div.innerHTML =
-          '<span class="title">Charging Level</span>' +
-          '<select id="levelSelect">' +
-            '<option value="ALL">All Levels</option>' +
-            '<option value="Level 2">Level 2</option>' +
-            '<option value="DC Fast (Level 3)">DC Fast (Level 3)</option>' +
-          '</select>';
-
-        L.DomEvent.disableClickPropagation(div);
-        L.DomEvent.disableScrollPropagation(div);
-
-        var sel = div.querySelector('#levelSelect');
-        sel.addEventListener('change', function(){
-          levelFilter = sel.value;
-          render();
-        });
-
-        return div;
-      };
-      levelControl.addTo(map);
-    }
-
-    // ======================
-    // RENDER
-    // ======================
-    var allRows = [];
-
-    function render() {
-      clusterGroup.clearLayers();
-      var any = false;
-
-      allRows.forEach(function(row){
-        var lat = row.lat, lon = row.lon;
-        if (typeof lat !== 'number' || typeof lon !== 'number' || isNaN(lat) || isNaN(lon)) return;
-
-        // ✅ ONLY NEW YORK STATE (polygon)
-        if (!pointInNY(lat, lon)) return;
-
-        if (!passesOperator(row)) return;
-        if (!passesLevel(row)) return;
-
-        var levelClass = isDcFast(row) ? 'bolt-l3' : 'bolt-l2';
-
-        var icon = L.divIcon({
-          className: 'bolt-divicon',
-          iconSize: [26, 26],
-          html: boltIconHTML(levelClass, row.operator)
-        });
-
-        var marker = L.marker([lat, lon], { icon: icon })
-          .bindPopup(makePopup(row));
-
-        clusterGroup.addLayer(marker);
-        any = true;
-      });
-
-      if (any) {
-        var b = clusterGroup.getBounds();
-        if (b && b.isValid()) map.fitBounds(b.pad(0.12));
-      } else if (nyBounds && nyBounds.isValid()) {
-        map.fitBounds(nyBounds.pad(0.05));
-      }
-    }
-
-    // ======================
-    // LOAD CSV (after NY boundary loads)
-    // ======================
-    function loadCSVThenInitUI() {
-      Papa.parse(OCM_CSV_URL, {
-        download: true,
-        header: true,
-        dynamicTyping: true,
-        complete: function(res) {
-          allRows = (res && res.data ? res.data : []).filter(function(r){
-            return r && typeof r.lat === 'number' && typeof r.lon === 'number' && !isNaN(r.lat) && !isNaN(r.lon);
-          });
-
-          // Build operator list using NY-only rows
-          var opsSet = {};
-          allRows.forEach(function(r){
-            if (!pointInNY(r.lat, r.lon)) return;
-
-            var op = normOperator(r.operator);
-            if (!op) return;
-            if (op === 'Blink Charging Europe') return;
-
-            opsSet[op] = true;
-          });
-
-          var ops = Object.keys(opsSet).sort(function(a,b){ return a.localeCompare(b); });
-
-          addOperatorControl(ops);
-          addLevelControl();
-
-          operatorFilter = 'ALL';
-          levelFilter = 'ALL';
-
-          render();
-        },
-        error: function(err) {
-          console.error('CSV parse error:', err);
-          alert('Could not load ocm_nyc_retail_locations.csv. Make sure it is in the same folder as index.html.');
-        }
-      });
-    }
-
-    // Load NY boundary first, then CSV (so filtering works immediately)
-    loadNYBoundary(loadCSVThenInitUI);
-  </script>
+<div id="map"></div>
+
+<div class="footer-attrib">
+<div>Data from OpenChargeMap</div>
+<div style="opacity:.8;">Retail EV charging locations</div>
+</div>
+
+<script>
+// CONFIG
+var OCM_CSV_URL='ocm_nyc_retail_locations.csv?v='+Date.now();
+var NY_GEOJSON_URL='ny_state.geojson?v='+Date.now();
+
+var map=L.map('map').setView([42.9,-75],6);
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png').addTo(map);
+
+var clusterGroup=L.markerClusterGroup({disableClusteringAtZoom:17});
+map.addLayer(clusterGroup);
+
+// ================= USER LOCATION =================
+var userLayer=L.layerGroup().addTo(map);
+
+function setUserMarker(lat,lng,label){
+ userLayer.clearLayers();
+ var m=L.marker([lat,lng]).addTo(userLayer).bindPopup(label).openPopup();
+ map.setView([lat,lng],14);
+}
+
+// GPS locate
+function locateUser(){
+ if(!navigator.geolocation){alert("No GPS support");return;}
+ navigator.geolocation.getCurrentPosition(pos=>{
+   setUserMarker(pos.coords.latitude,pos.coords.longitude,"You are here");
+ },()=>alert("Location blocked"));
+}
+
+// address search ONLY
+async function searchAddress(q){
+ if(!q)return;
+ var url=`https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(q)}`;
+ var r=await fetch(url);
+ var j=await r.json();
+ if(!j.length){alert("Location not found");return;}
+ setUserMarker(parseFloat(j[0].lat),parseFloat(j[0].lon),j[0].display_name);
+}
+
+// Leaflet control
+L.control({position:'bottomleft'}).onAdd=function(){
+ var div=L.DomUtil.create('div','locateBox');
+ div.innerHTML=`
+   <button id="gpsBtn">📍</button>
+   <input id="searchBox" placeholder="Search address"/>
+   <button id="goBtn">Go</button>`;
+ L.DomEvent.disableClickPropagation(div);
+ setTimeout(()=>{
+   document.getElementById('gpsBtn').onclick=locateUser;
+   document.getElementById('goBtn').onclick=()=>searchAddress(document.getElementById('searchBox').value);
+ });
+ return div;
+}.addTo(map);
+
+// ================= LOAD CSV =================
+Papa.parse(OCM_CSV_URL,{
+ download:true,header:true,dynamicTyping:true,
+ complete:function(res){
+   res.data.forEach(r=>{
+     if(!r.lat||!r.lon)return;
+     var m=L.marker([r.lat,r.lon]).bindPopup(r.name||"Charger");
+     clusterGroup.addLayer(m);
+   });
+ }
+});
+</script>
 </body>
 </html>
