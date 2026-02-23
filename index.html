@@ -104,47 +104,6 @@
     .footer-attrib a { color: #111; text-decoration: none; font-weight: 600; }
     .footer-attrib a:hover { text-decoration: underline; }
     .leaflet-bottom { margin-bottom: 28px; }
-
-    /* ======================
-       NEW: Location control UI
-       ====================== */
-    .loc-ctl {
-      background: #fff;
-      padding: 8px;
-      border-radius: 10px;
-      box-shadow: 0 1px 6px rgba(0,0,0,0.25);
-      font: 14px/1.2 system-ui, -apple-system, Arial, sans-serif;
-      display: flex;
-      gap: 8px;
-      align-items: center;
-    }
-    .loc-ctl button {
-      border: 1px solid #e5e7eb;
-      background: #111;
-      color: #fff;
-      padding: 6px 10px;
-      border-radius: 8px;
-      cursor: pointer;
-      font-size: 13px;
-      white-space: nowrap;
-    }
-    .loc-ctl button.secondary {
-      background: #fff;
-      color: #111;
-    }
-    .loc-ctl input {
-      border: 1px solid #e5e7eb;
-      padding: 6px 8px;
-      border-radius: 8px;
-      width: 210px;
-      max-width: 55vw;
-      font-size: 13px;
-    }
-    .loc-ctl .mini {
-      font-size: 12px;
-      color: #6b7280;
-      margin-left: 2px;
-    }
   </style>
 </head>
 
@@ -375,7 +334,7 @@
       var plugs = cleanStr(row.plug_types);
       var currents = cleanStr(row.current_types);
       var levels = cleanStr(row.charging_levels);
-      var maxKw = (row.max_kw !== undefined && row.max_kw !== null && row.max_kw !== '') ? row.max_kw : '';
+      var maxKw = (row.max_kw !== undefined && row.max_kw !== null && row.maxKw !== '') ? row.max_kw : '';
       var points = (row.num_points !== undefined && row.num_points !== null && row.num_points !== '') ? row.num_points : '';
       var status = cleanStr(row.status_type);
       var usage = cleanStr(row.usage_type);
@@ -495,134 +454,6 @@
       };
       levelControl.addTo(map);
     }
-
-    // ======================
-    // NEW: LOCATION + ADDRESS SEARCH (NO LAT/LON INPUT)
-    // ======================
-    var userLocationLayer = L.layerGroup().addTo(map);
-
-    function clearUserLocation() {
-      userLocationLayer.clearLayers();
-    }
-
-    function setUserLocation(lat, lon, label, accuracyMeters) {
-      clearUserLocation();
-
-      var m = L.marker([lat, lon]).addTo(userLocationLayer);
-      m.bindPopup(escapeHtml(label || 'Selected location')).openPopup();
-
-      if (typeof accuracyMeters === 'number' && isFinite(accuracyMeters) && accuracyMeters > 0) {
-        L.circle([lat, lon], { radius: accuracyMeters }).addTo(userLocationLayer);
-      }
-
-      // Keep it reasonably zoomed for drivers
-      map.setView([lat, lon], 14);
-    }
-
-    function locateMe() {
-      if (!navigator.geolocation) {
-        alert("Geolocation isn't supported in this browser.");
-        return;
-      }
-
-      navigator.geolocation.getCurrentPosition(
-        function(pos) {
-          setUserLocation(
-            pos.coords.latitude,
-            pos.coords.longitude,
-            '📍 Your location',
-            pos.coords.accuracy
-          );
-        },
-        function(err) {
-          // Common: permission denied / insecure origin / timeout
-          console.warn('Geolocation error:', err);
-          alert('Could not get your location. Make sure location permissions are enabled for this site.');
-        },
-        { enableHighAccuracy: true, timeout: 10000, maximumAge: 30000 }
-      );
-    }
-
-    // Address search only (blocks "lat,lng" style entries)
-    function looksLikeLatLng(s) {
-      // Detect patterns like "40.7,-74.0" or "40.7, -74.0"
-      return /^\s*[-+]?\d+(\.\d+)?\s*,\s*[-+]?\d+(\.\d+)?\s*$/.test(s || '');
-    }
-
-    function searchAddress() {
-      var input = document.getElementById('addrInput');
-      if (!input) return;
-
-      var q = cleanStr(input.value);
-      if (!q) return;
-
-      if (looksLikeLatLng(q)) {
-        alert('Please enter an address or place name (no latitude/longitude).');
-        return;
-      }
-
-      // Nominatim usage etiquette: add a simple "Accept-Language" and a UA string is not possible from browser,
-      // but this is okay for light use.
-      var url = 'https://nominatim.openstreetmap.org/search?format=json&limit=1&q=' + encodeURIComponent(q);
-
-      fetch(url)
-        .then(function(r){ return r.json(); })
-        .then(function(results){
-          if (!results || !results.length) {
-            alert("Couldn't find that address. Try a more specific search (e.g., '350 5th Ave, Manhattan').");
-            return;
-          }
-          var hit = results[0];
-          setUserLocation(parseFloat(hit.lat), parseFloat(hit.lon), hit.display_name);
-        })
-        .catch(function(err){
-          console.error('Geocode error:', err);
-          alert("Address search failed. Please try again.");
-        });
-    }
-
-    function addLocationControl() {
-      var locControl = L.control({ position: 'bottomleft' });
-      locControl.onAdd = function() {
-        var div = L.DomUtil.create('div', 'loc-ctl');
-
-        div.innerHTML =
-          '<button id="btnLocateMe" type="button">📍 My Location</button>' +
-          '<input id="addrInput" type="text" placeholder="Search address or place" />' +
-          '<button id="btnGoAddr" type="button" class="secondary">Go</button>' +
-          '<button id="btnClearLoc" type="button" class="secondary">Clear</button>';
-
-        L.DomEvent.disableClickPropagation(div);
-        L.DomEvent.disableScrollPropagation(div);
-
-        // Bind events after div is in DOM
-        setTimeout(function(){
-          var b1 = document.getElementById('btnLocateMe');
-          var b2 = document.getElementById('btnGoAddr');
-          var b3 = document.getElementById('btnClearLoc');
-          var inp = document.getElementById('addrInput');
-
-          if (b1) b1.addEventListener('click', locateMe);
-          if (b2) b2.addEventListener('click', searchAddress);
-          if (b3) b3.addEventListener('click', clearUserLocation);
-
-          if (inp) {
-            inp.addEventListener('keydown', function(e){
-              if (e.key === 'Enter') {
-                e.preventDefault();
-                searchAddress();
-              }
-            });
-          }
-        }, 0);
-
-        return div;
-      };
-      locControl.addTo(map);
-    }
-
-    // Add the location control now (does not affect CSV load)
-    addLocationControl();
 
     // ======================
     // RENDER
