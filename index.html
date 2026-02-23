@@ -104,6 +104,43 @@
     .footer-attrib a { color: #111; text-decoration: none; font-weight: 600; }
     .footer-attrib a:hover { text-decoration: underline; }
     .leaflet-bottom { margin-bottom: 28px; }
+
+    /* ======================
+       NEW: Address search / location UI
+       ====================== */
+    .search-ctl {
+      background: white;
+      padding: 8px 10px;
+      border-radius: 10px;
+      box-shadow: 0 1px 6px rgba(0,0,0,0.25);
+      font: 13px/1.2 system-ui, -apple-system, Arial, sans-serif;
+      display: flex;
+      gap: 8px;
+      align-items: center;
+    }
+    .search-ctl input {
+      width: 240px;
+      max-width: 60vw;
+      padding: 6px 8px;
+      border-radius: 8px;
+      border: 1px solid #e5e7eb;
+      outline: none;
+      font-size: 13px;
+    }
+    .search-ctl button {
+      padding: 6px 10px;
+      border-radius: 8px;
+      border: 1px solid #e5e7eb;
+      background: #111;
+      color: #fff;
+      cursor: pointer;
+      font-size: 13px;
+      white-space: nowrap;
+    }
+    .search-ctl button.secondary {
+      background: #fff;
+      color: #111;
+    }
   </style>
 </head>
 
@@ -334,7 +371,7 @@
       var plugs = cleanStr(row.plug_types);
       var currents = cleanStr(row.current_types);
       var levels = cleanStr(row.charging_levels);
-      var maxKw = (row.max_kw !== undefined && row.max_kw !== null && row.maxKw !== '') ? row.max_kw : '';
+      var maxKw = (row.max_kw !== undefined && row.max_kw !== null && row.max_kw !== '') ? row.max_kw : '';
       var points = (row.num_points !== undefined && row.num_points !== null && row.num_points !== '') ? row.num_points : '';
       var status = cleanStr(row.status_type);
       var usage = cleanStr(row.usage_type);
@@ -387,6 +424,145 @@
       if (levelFilter === 'ALL') return true;
       return chargingLevelLabel(row) === levelFilter;
     }
+
+    // ======================
+    // NEW: USER LOCATION + ADDRESS SEARCH (SAFE / ISOLATED)
+    // ======================
+    var userLocationLayer = L.layerGroup().addTo(map);
+
+    function clearUserLocation() {
+      userLocationLayer.clearLayers();
+    }
+
+    function setUserLocation(lat, lon, label, accuracyMeters) {
+      clearUserLocation();
+
+      var marker = L.marker([lat, lon]).addTo(userLocationLayer);
+      marker.bindPopup(escapeHtml(label || 'Selected location')).openPopup();
+
+      if (typeof accuracyMeters === 'number' && isFinite(accuracyMeters) && accuracyMeters > 0) {
+        L.circle([lat, lon], { radius: accuracyMeters }).addTo(userLocationLayer);
+      }
+
+      map.setView([lat, lon], 14);
+    }
+
+    function locateMeSafe() {
+      try {
+        if (!navigator.geolocation) {
+          alert("Geolocation isn't supported by this browser.");
+          return;
+        }
+        navigator.geolocation.getCurrentPosition(
+          function(pos) {
+            setUserLocation(
+              pos.coords.latitude,
+              pos.coords.longitude,
+              '📍 Your location',
+              pos.coords.accuracy
+            );
+          },
+          function(err) {
+            console.warn('Geolocation error:', err);
+            alert("Couldn't get your location. Make sure this page is served over HTTPS (GitHub Pages) or localhost, and allow location permissions.");
+          },
+          { enableHighAccuracy: true, timeout: 10000, maximumAge: 30000 }
+        );
+      } catch (e) {
+        console.error('Locate exception:', e);
+      }
+    }
+
+    // block lat,lng input so drivers only use address/place
+    function looksLikeLatLng(s) {
+      return /^\s*[-+]?\d+(\.\d+)?\s*,\s*[-+]?\d+(\.\d+)?\s*$/.test(s || '');
+    }
+
+    function searchAddressSafe(query) {
+      try {
+        var q = cleanStr(query);
+        if (!q) return;
+
+        if (looksLikeLatLng(q)) {
+          alert('Please enter an address or place name (no latitude/longitude).');
+          return;
+        }
+
+        var url = 'https://nominatim.openstreetmap.org/search?format=json&limit=1&q=' + encodeURIComponent(q);
+
+        fetch(url)
+          .then(function(r){ return r.json(); })
+          .then(function(results){
+            if (!results || !results.length) {
+              alert("Couldn't find that location. Try a more specific address.");
+              return;
+            }
+            var hit = results[0];
+            var lat = parseFloat(hit.lat);
+            var lon = parseFloat(hit.lon);
+
+            if (!isFinite(lat) || !isFinite(lon)) {
+              alert('Search returned invalid coordinates.');
+              return;
+            }
+
+            setUserLocation(lat, lon, hit.display_name);
+          })
+          .catch(function(err){
+            console.error('Geocode fetch error:', err);
+            alert('Address search failed. Please try again.');
+          });
+      } catch (e) {
+        console.error('Search exception:', e);
+      }
+    }
+
+    function addSearchControl() {
+      var ctl = L.control({ position: 'bottomleft' });
+      ctl.onAdd = function() {
+        var div = L.DomUtil.create('div', 'search-ctl');
+
+        div.innerHTML =
+          '<button type="button" class="btn-locate">📍 My Location</button>' +
+          '<input type="text" class="addr" placeholder="Search address / place (NY)" />' +
+          '<button type="button" class="btn-go secondary">Go</button>' +
+          '<button type="button" class="btn-clear secondary">Clear</button>';
+
+        L.DomEvent.disableClickPropagation(div);
+        L.DomEvent.disableScrollPropagation(div);
+
+        var btnLocate = div.querySelector('.btn-locate');
+        var btnGo = div.querySelector('.btn-go');
+        var btnClear = div.querySelector('.btn-clear');
+        var input = div.querySelector('.addr');
+
+        btnLocate.addEventListener('click', function() {
+          locateMeSafe();
+        });
+
+        btnGo.addEventListener('click', function() {
+          searchAddressSafe(input.value);
+        });
+
+        btnClear.addEventListener('click', function() {
+          clearUserLocation();
+          if (input) input.value = '';
+        });
+
+        input.addEventListener('keydown', function(e){
+          if (e.key === 'Enter') {
+            e.preventDefault();
+            searchAddressSafe(input.value);
+          }
+        });
+
+        return div;
+      };
+      ctl.addTo(map);
+    }
+
+    // add it immediately; it will not affect CSV render pipeline
+    addSearchControl();
 
     // ======================
     // UI CONTROLS
