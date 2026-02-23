@@ -2,7 +2,7 @@
 <html>
 <head>
   <meta charset="utf-8" />
-  <title>NY EV Retail Map (OCM CSV)</title>
+  <title>NY EV Retail Map (OCM CSV) — Level 3 Only</title>
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
 
   <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css" />
@@ -55,7 +55,7 @@
       transform: translate(-1px, -1px);
       position: relative;
     }
-    .bolt-l2 { background: #2563eb; }
+    .bolt-l2 { background: #2563eb; } /* not used in Level 3 only, kept for compatibility */
     .bolt-l3 { background: #16a34a; }
 
     .op-badge {
@@ -105,9 +105,7 @@
     .footer-attrib a:hover { text-decoration: underline; }
     .leaflet-bottom { margin-bottom: 28px; }
 
-    /* ======================
-       NEW: Address search / location UI
-       ====================== */
+    /* Address search / location UI */
     .search-ctl {
       background: white;
       padding: 8px 10px;
@@ -149,7 +147,7 @@
 
   <div class="footer-attrib">
     <div>Data from <a href="https://openchargemap.org" target="_blank" rel="noopener">OpenChargeMap</a></div>
-    <div style="opacity:.8;">Retail EV charging locations</div>
+    <div style="opacity:.8;">Retail DC Fast (Level 3) charging locations</div>
   </div>
 
   <script>
@@ -181,7 +179,7 @@
     var nyGeo = null;       // raw geojson
     var nyLayer = null;     // leaflet layer (optional outline)
     var nyBounds = null;    // leaflet bounds
-    var nyRings = [];       // array of rings (each ring: [{lat,lon},...]) for point-in-poly
+    var nyRings = [];       // array of rings for point-in-poly
 
     function cleanStr(v) {
       if (v === undefined || v === null) return '';
@@ -213,13 +211,11 @@
     }
 
     // Supports MultiPolygon and Polygon.
-    // Treats "inside NY" if inside any outer ring AND not inside a hole ring.
+    // Inside NY if inside any outer ring AND not inside a hole.
     function pointInNY(lat, lon) {
       if (!nyGeo) return true; // if boundary not loaded yet, don't hide anything
-      // Quick bounds reject
       if (nyBounds && !nyBounds.contains([lat, lon])) return false;
 
-      // nyRings structure: [{ outers:[ring...], holes:[ring...] }, ...]
       for (var p = 0; p < nyRings.length; p++) {
         var poly = nyRings[p];
         var inOuter = false;
@@ -238,11 +234,9 @@
     }
 
     function extractRingsFromGeoJSON(gj) {
-      // Output array of polygons: {outers:[ring], holes:[ring]}
       var out = [];
 
       function coordsToRing(coords) {
-        // coords: [[lon,lat], ...]
         var ring = [];
         for (var i = 0; i < coords.length; i++) {
           ring.push({ lon: coords[i][0], lat: coords[i][1] });
@@ -251,7 +245,6 @@
       }
 
       function handlePolygonCoords(polyCoords) {
-        // polyCoords: [ outerRingCoords, hole1Coords, hole2Coords, ... ]
         var poly = { outers: [], holes: [] };
         if (polyCoords.length > 0) poly.outers.push(coordsToRing(polyCoords[0]));
         for (var i = 1; i < polyCoords.length; i++) {
@@ -285,7 +278,7 @@
         .then(function(gj){
           nyGeo = gj;
 
-          // Optional outline on map (kept very light)
+          // Optional outline on map
           nyLayer = L.geoJSON(gj, {
             style: function() {
               return { weight: 2, opacity: 0.35, fillOpacity: 0.02 };
@@ -316,7 +309,7 @@
     }
 
     // ======================
-    // YOUR EXISTING HELPERS
+    // HELPERS
     // ======================
     function isDcFast(row) {
       var hasDc = row.has_dc_fast;
@@ -329,10 +322,6 @@
       if (!isNaN(maxKw) && maxKw >= 50) return true;
 
       return false;
-    }
-
-    function chargingLevelLabel(row) {
-      return isDcFast(row) ? 'DC Fast (Level 3)' : 'Level 2';
     }
 
     function makeOperatorCode(op) {
@@ -366,7 +355,6 @@
     function makePopup(row) {
       var name = cleanStr(row.name) || 'EV Charging Site';
       var op = normOperator(row.operator);
-      var level = chargingLevelLabel(row);
 
       var plugs = cleanStr(row.plug_types);
       var currents = cleanStr(row.current_types);
@@ -389,7 +377,7 @@
 
       var html = '<div class="popup" style="min-width:260px;">' +
         '<strong>' + escapeHtml(name) + '</strong>' +
-        '<div class="row"><span class="k">Charging Level:</span> ' + escapeHtml(level) + '</div>' +
+        '<div class="row"><span class="k">Charging Level:</span> DC Fast (Level 3)</div>' +
         (op ? '<div class="row"><span class="k">Operator:</span> ' + escapeHtml(op) + '</div>' : '') +
         (points ? '<div class="row"><span class="k">Ports (reported):</span> ' + escapeHtml(points) + '</div>' : '') +
         (maxKw !== '' ? '<div class="row"><span class="k">Max kW:</span> ' + escapeHtml(maxKw) + '</div>' : '') +
@@ -409,10 +397,9 @@
     }
 
     // ======================
-    // FILTER STATE
+    // FILTER STATE (Operator only — Level 3 is hard-locked)
     // ======================
     var operatorFilter = 'ALL';
-    var levelFilter = 'ALL';
 
     function passesOperator(row) {
       if (operatorFilter === 'ALL') return true;
@@ -420,13 +407,8 @@
       return op === operatorFilter;
     }
 
-    function passesLevel(row) {
-      if (levelFilter === 'ALL') return true;
-      return chargingLevelLabel(row) === levelFilter;
-    }
-
     // ======================
-    // NEW: USER LOCATION + ADDRESS SEARCH (SAFE / ISOLATED)
+    // USER LOCATION + ADDRESS SEARCH
     // ======================
     var userLocationLayer = L.layerGroup().addTo(map);
 
@@ -561,13 +543,12 @@
       ctl.addTo(map);
     }
 
-    // add it immediately; it will not affect CSV render pipeline
     addSearchControl();
 
     // ======================
-    // UI CONTROLS
+    // UI CONTROLS (Operator only)
     // ======================
-    var operatorControl, levelControl;
+    var operatorControl;
 
     function addOperatorControl(operatorsSorted) {
       operatorControl = L.control({position: 'topleft'});
@@ -576,7 +557,7 @@
         div.innerHTML =
           '<span class="title">Operator</span>' +
           '<select id="operatorSelect"></select>' +
-          '<div class="hint">Tip: pick an operator, then filter Level 2 vs DC Fast.</div>';
+          '<div class="hint">This map shows <b>DC Fast (Level 3)</b> chargers only.</div>';
 
         L.DomEvent.disableClickPropagation(div);
         L.DomEvent.disableScrollPropagation(div);
@@ -605,34 +586,8 @@
       operatorControl.addTo(map);
     }
 
-    function addLevelControl() {
-      levelControl = L.control({position: 'topright'});
-      levelControl.onAdd = function () {
-        var div = L.DomUtil.create('div', 'controls');
-        div.innerHTML =
-          '<span class="title">Charging Level</span>' +
-          '<select id="levelSelect">' +
-            '<option value="ALL">All Levels</option>' +
-            '<option value="Level 2">Level 2</option>' +
-            '<option value="DC Fast (Level 3)">DC Fast (Level 3)</option>' +
-          '</select>';
-
-        L.DomEvent.disableClickPropagation(div);
-        L.DomEvent.disableScrollPropagation(div);
-
-        var sel = div.querySelector('#levelSelect');
-        sel.addEventListener('change', function(){
-          levelFilter = sel.value;
-          render();
-        });
-
-        return div;
-      };
-      levelControl.addTo(map);
-    }
-
     // ======================
-    // RENDER
+    // RENDER (LEVEL 3 ONLY)
     // ======================
     var allRows = [];
 
@@ -644,18 +599,19 @@
         var lat = row.lat, lon = row.lon;
         if (typeof lat !== 'number' || typeof lon !== 'number' || isNaN(lat) || isNaN(lon)) return;
 
-        // ✅ ONLY NEW YORK STATE (polygon)
+        // NY only
         if (!pointInNY(lat, lon)) return;
 
+        // Operator filter
         if (!passesOperator(row)) return;
-        if (!passesLevel(row)) return;
 
-        var levelClass = isDcFast(row) ? 'bolt-l3' : 'bolt-l2';
+        // ✅ HARD LOCK: DC Fast only
+        if (!isDcFast(row)) return;
 
         var icon = L.divIcon({
           className: 'bolt-divicon',
           iconSize: [26, 26],
-          html: boltIconHTML(levelClass, row.operator)
+          html: boltIconHTML('bolt-l3', row.operator)
         });
 
         var marker = L.marker([lat, lon], { icon: icon })
@@ -686,10 +642,11 @@
             return r && typeof r.lat === 'number' && typeof r.lon === 'number' && !isNaN(r.lat) && !isNaN(r.lon);
           });
 
-          // Build operator list using NY-only rows
+          // Build operator list using NY-only + Level 3-only rows
           var opsSet = {};
           allRows.forEach(function(r){
             if (!pointInNY(r.lat, r.lon)) return;
+            if (!isDcFast(r)) return;
 
             var op = normOperator(r.operator);
             if (!op) return;
@@ -701,10 +658,7 @@
           var ops = Object.keys(opsSet).sort(function(a,b){ return a.localeCompare(b); });
 
           addOperatorControl(ops);
-          addLevelControl();
-
           operatorFilter = 'ALL';
-          levelFilter = 'ALL';
 
           render();
         },
