@@ -1,73 +1,32 @@
-"""
-Pull all public/retail EV charging stations in NYC from the NYSERDA /
-Open Data NY Socrata dataset (7rrd-248n), tag each with borough, and
-write nyc_retail_chargers.csv.
+# Save this as .github/workflows/nyc_retail_chargers.yml in your repo,
+# alongside nyc_retail_chargers.py at the repo root (adjust path if you
+# put it elsewhere).
 
-Run locally:
-    pip install requests
-    python nyc_retail_chargers.py
+name: NYC Retail Chargers Pull
 
-Run in GitHub Actions: see workflow.yml below.
-"""
+on:
+  workflow_dispatch:      # manual "Run workflow" button
+  schedule:
+    - cron: "0 6 * * 1"   # every Monday 6am UTC — remove if you only want manual runs
 
-import csv
-import sys
-import requests
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
 
-SODA_ENDPOINT = "https://data.ny.gov/resource/7rrd-248n.json"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
 
-# NYC ZIP prefixes: Manhattan 100-102, Bronx 104, Staten Island 103,
-# Brooklyn 112, Queens 110/111/113/114/116
-NYC_ZIP_PREFIXES = ["100", "101", "102", "103", "104", "110", "111", "112", "113", "114", "116"]
+      - name: Install dependencies
+        run: pip install requests
 
-FIELDS = [
-    "borough", "station_name", "street_address", "city", "zip", "ev_network",
-    "ev_level1_evse_num", "ev_level2_evse_num", "ev_dc_fast_count",
-    "ev_connector_types", "access_days_time", "cards_accepted",
-    "latitude", "longitude", "date_last_confirmed", "id",
-]
+      - name: Run script
+        run: python nyc_retail_chargers.py
 
-def borough_from_zip(zip_code):
-    z = (zip_code or "")[:3]
-    if z in ("100", "101", "102"):
-        return "Manhattan"
-    if z == "104":
-        return "Bronx"
-    if z == "103":
-        return "Staten Island"
-    if z == "112":
-        return "Brooklyn"
-    if z in ("110", "111", "113", "114", "116"):
-        return "Queens"
-    return "Unknown"
-
-def fetch_all_nyc_stations():
-    where_clause = " OR ".join(f"starts_with(zip, '{p}')" for p in NYC_ZIP_PREFIXES)
-    params = {"$where": where_clause, "$limit": 10000, "$order": "city"}
-    resp = requests.get(SODA_ENDPOINT, params=params, timeout=60)
-    resp.raise_for_status()
-    return resp.json()
-
-def main():
-    try:
-        stations = fetch_all_nyc_stations()
-    except requests.RequestException as e:
-        print(f"Request failed: {e}", file=sys.stderr)
-        sys.exit(1)
-
-    for s in stations:
-        s["borough"] = borough_from_zip(s.get("zip"))
-
-    with open("nyc_retail_chargers.csv", "w", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=FIELDS, extrasaction="ignore")
-        writer.writeheader()
-        writer.writerows(stations)
-
-    from collections import Counter
-    counts = Counter(s["borough"] for s in stations)
-    print(f"Wrote {len(stations)} NYC stations to nyc_retail_chargers.csv")
-    for b, c in counts.most_common():
-        print(f"  {b}: {c}")
-
-if __name__ == "__main__":
-    main()
+      - name: Upload CSV artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: nyc-retail-chargers
+          path: nyc_retail_chargers.csv
